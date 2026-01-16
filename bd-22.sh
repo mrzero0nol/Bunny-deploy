@@ -1,6 +1,6 @@
 #!/bin/bash
 # ==========================================
-#  BUNNY DEPLOY - UBUNTU 22.04 / 24.04
+#  BUNNY DEPLOY - UBUNTU 22.04 (FIX SSH)
 #  Dev: Kang Sarip
 # ==========================================
 
@@ -9,7 +9,7 @@ APT_OPTS="-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
 
 if [ "$EUID" -ne 0 ]; then echo "Harap jalankan sebagai root (sudo -i)"; exit; fi
 
-echo "Installing Bunny Deploy (Ubuntu 22/24)..."
+echo "Installing Bunny Deploy (Ubuntu 22)..."
 
 # 1. Update & Tools
 apt update -y
@@ -27,10 +27,11 @@ curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
 apt install -y $APT_OPTS nodejs
 npm install -g pm2 yarn
 
-# 4. Config
+# 4. Config & Firewall (SUDAH DIPERBAIKI)
 systemctl enable nginx php8.2-fpm
 systemctl start nginx php8.2-fpm
 ufw allow 'Nginx Full'
+ufw allow OpenSSH
 echo "y" | ufw enable
 
 # 5. Buat Command 'bd'
@@ -96,7 +97,7 @@ while true; do
     echo "4. Restart App"
     echo "5. Stop App"
     echo "6. Delete App"
-    echo "7. Cek Logs (Aman/No-Stream)"
+    echo "7. Cek Logs (Safe Mode)"
     echo "-----------------"
     echo "8. Restart System (Nginx/PHP)"
     echo "9. Uninstall Script"
