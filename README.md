@@ -1,5 +1,5 @@
 # Bunny-deploy
-## install for Ubuntu 22 
+## install for Ubuntu 22-24
 ```bash
 curl -L https://s.id/bd-U22 | sudo bash
 ```
