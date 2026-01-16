@@ -1,9 +1,12 @@
 #!/bin/bash
 
 # ==========================================
-#  🐰 BUNNY DEPLOY 🐰
-#    Dev:Kang Sarip
+#  🐰 BUNNY DEPLOY (bd) - ANTI-STUCK VERSION
+#  Created for: Kang Sarip
 # ==========================================
+
+# 1. Setting agar tidak muncul dialog interaktif (Anti-Stuck)
+export DEBIAN_FRONTEND=noninteractive
 
 # Warna System
 RED='\033[0;31m'
@@ -22,24 +25,27 @@ fi
 
 clear
 echo -e "${PURPLE}=====================================================${NC}"
-echo -e "${CYAN}      SEDANG MEMASANG ENGINE (BUNNY DEPLOY)...  ${NC}"
+echo -e "${CYAN}      SEDANG MEMASANG ENGINE 'bd' (BUNNY DEPLOY)...  ${NC}"
 echo -e "${PURPLE}=====================================================${NC}"
 
-# --- 1. UPDATE SYSTEM & INSTALL TOOLS ---
+# --- 1. UPDATE SYSTEM & INSTALL TOOLS (Updated with fix) ---
 echo -e "${YELLOW}[1/5] Update System & Install Tools Dasar...${NC}"
-apt update && apt upgrade -y
-apt install -y curl git unzip build-essential ufw software-properties-common
+
+# Fix: Tambahkan parameter config force-confold agar tidak muncul dialog pink
+apt update
+apt upgrade -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold"
+apt install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" curl git unzip build-essential ufw software-properties-common
 
 # --- 2. INSTALL NGINX & SSL CERTBOT ---
 echo -e "${YELLOW}[2/5] Install Nginx & Certbot...${NC}"
-apt install -y nginx certbot python3-certbot-nginx
+apt install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" nginx certbot python3-certbot-nginx
 systemctl enable nginx
 systemctl start nginx
 
 # --- 3. INSTALL NODE.JS 20 & PM2 ---
 echo -e "${YELLOW}[3/5] Install Node.js 20 (LTS) & PM2...${NC}"
 curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-apt install -y nodejs
+apt install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" nodejs
 npm install -g pm2 yarn typescript
 pm2 startup
 
@@ -47,7 +53,7 @@ pm2 startup
 echo -e "${YELLOW}[4/5] Install PHP 8.2 & Composer...${NC}"
 add-apt-repository ppa:ondrej/php -y
 apt update
-apt install -y php8.2 php8.2-fpm php8.2-mysql php8.2-curl php8.2-xml php8.2-mbstring composer
+apt install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" php8.2 php8.2-fpm php8.2-mysql php8.2-curl php8.2-xml php8.2-mbstring composer
 systemctl start php8.2-fpm
 systemctl enable php8.2-fpm
 
@@ -98,15 +104,12 @@ deploy_web() {
     CONFIG="/etc/nginx/sites-available/$DOMAIN"
 
     if [ "$TYPE" == "1" ]; then
-        # Config Static
         read -p "Path Folder (misal /var/www/dist): " ROOT
         BLOCK="server { listen 80; server_name $DOMAIN www.$DOMAIN; root $ROOT; index index.html; location / { try_files \$uri \$uri/ /index.html; } }"
     elif [ "$TYPE" == "2" ]; then
-        # Config Proxy Node
         read -p "Port Aplikasi (misal 3000): " PORT
         BLOCK="server { listen 80; server_name $DOMAIN www.$DOMAIN; location / { proxy_pass http://localhost:$PORT; proxy_http_version 1.1; proxy_set_header Upgrade \$http_upgrade; proxy_set_header Connection 'upgrade'; proxy_set_header Host \$host; proxy_cache_bypass \$http_upgrade; } }"
     elif [ "$TYPE" == "3" ]; then
-        # Config PHP
         read -p "Path Folder (misal /var/www/web): " ROOT
         BLOCK="server { listen 80; server_name $DOMAIN www.$DOMAIN; root $ROOT; index index.php index.html; location / { try_files \$uri \$uri/ /index.php?\$query_string; } location ~ \.php$ { include snippets/fastcgi-php.conf; fastcgi_pass unix:/run/php/php8.2-fpm.sock; } }"
     else
