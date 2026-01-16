@@ -16,7 +16,7 @@ apt update -y
 apt upgrade -y $APT_OPTS
 apt install -y $APT_OPTS curl git unzip build-essential ufw software-properties-common
 
-# 2. Install PHP 8.2 (PPA Ondrej untuk update terbaru)
+# 2. Install PHP 8.2
 add-apt-repository -y ppa:ondrej/php
 apt update -y
 apt install -y $APT_OPTS nginx certbot python3-certbot-nginx
@@ -96,7 +96,7 @@ while true; do
     echo "4. Restart App"
     echo "5. Stop App"
     echo "6. Delete App"
-    echo "7. Cek Logs"
+    echo "7. Cek Logs (Aman/No-Stream)"
     echo "-----------------"
     echo "8. Restart System (Nginx/PHP)"
     echo "9. Uninstall Script"
@@ -109,7 +109,7 @@ while true; do
         4) read -p "ID: " I; pm2 restart $I; read -p "Enter..." ;;
         5) read -p "ID: " I; pm2 stop $I; read -p "Enter..." ;;
         6) read -p "ID: " I; pm2 delete $I; pm2 save; read -p "Enter..." ;;
-        7) read -p "ID: " I; pm2 logs $I ;;
+        7) read -p "ID App: " I; pm2 logs $I --lines 50 --nostream; read -p "Enter..." ;;
         8) systemctl restart nginx php8.2-fpm; echo "Refreshed."; read -p "Enter..." ;;
         9) uninstall_bd ;;
         0) exit ;;
