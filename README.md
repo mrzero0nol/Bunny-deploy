@@ -1,4 +1,4 @@
 # Bunny-deploy
-```sudo -i```
+```bash
+curl -L https://s.id/bunny-deploy | sudo bash
 
-```curl -L https://s.id/bunny-deploy | sudo bash```
