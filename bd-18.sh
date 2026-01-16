@@ -1,53 +1,60 @@
 #!/bin/bash
 # ==========================================
-#  🐰 BUNNY DEPLOY - SUPER LEGACY (Ubuntu 18.04)
-#  Node.js: 16.x | PHP: 7.4 | Certbot via Snap
+#  BUNNY DEPLOY - UBUNTU 18.04 (LEGACY)
+#  Dev: Kang Sarip
 # ==========================================
 
 export DEBIAN_FRONTEND=noninteractive
+APT_OPTS="-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
 
 if [ "$EUID" -ne 0 ]; then echo "Harap jalankan sebagai root (sudo -i)"; exit; fi
 
-echo "=== INSTALLING BUNNY DEPLOY (UBUNTU 18.04) ==="
-echo "WARNING: OS ini sudah EOL. Keamanan tidak terjamin."
+echo "Installing Bunny Deploy (Ubuntu 18)..."
 
-# 1. Update System
+# 1. Update & Tools
 apt update -y
-apt install -y curl git unzip build-essential ufw software-properties-common
+apt install -y $APT_OPTS curl git unzip build-essential ufw software-properties-common
 
-# 2. Install PHP 7.4 (PPA Ondrej wajib untuk Ubuntu 18)
+# 2. Install PHP 7.4 (Ubuntu 18 tidak kuat PHP 8.x)
 add-apt-repository -y ppa:ondrej/php
 apt update -y
-apt install -y nginx php7.4 php7.4-fpm php7.4-mysql php7.4-curl php7.4-xml php7.4-mbstring composer
+apt install -y $APT_OPTS nginx php7.4 php7.4-fpm php7.4-mysql php7.4-curl php7.4-xml php7.4-mbstring composer
 
-# 3. Install Node.js 16 (Node 18+ GAGAL di Ubuntu 18.04 karena glibc tua)
+# 3. Install Node.js 16 (Versi 18/20 Gagal di OS ini)
 curl -fsSL https://deb.nodesource.com/setup_16.x | bash -
-apt install -y nodejs
+apt install -y $APT_OPTS nodejs
 npm install -g pm2 yarn
 
-# 4. Install Certbot (Wajib via SNAP di Ubuntu 18, apt-nya error)
+# 4. Install Certbot via Snap (Apt bawaan rusak di Ubuntu 18)
 apt install -y snapd
 snap install core; snap refresh core
 snap install --classic certbot
 ln -s /snap/bin/certbot /usr/bin/certbot
 
-# 5. Config & Firewall
+# 5. Config
 systemctl enable nginx php7.4-fpm
 systemctl start nginx php7.4-fpm
 ufw allow 'Nginx Full'
 echo "y" | ufw enable
 
-# 6. Buat Command 'bd' (PHP 7.4 Config)
+# 6. Buat Command 'bd' (Disesuaikan untuk PHP 7.4)
 cat << 'EOF' > /usr/local/bin/bd
 #!/bin/bash
-RED='\033[0;31m'; GREEN='\033[0;32m'; CYAN='\033[0;36m'; NC='\033[0m'
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
+
+show_header() {
+    clear
+    echo -e "${RED}======================================${NC}"
+    echo -e "${YELLOW}   BUNNY DEPLOY - Dev Kang Sarip${NC}"
+    echo -e "${RED}======================================${NC}"
+}
 
 deploy_web() {
-    echo -e "\n${GREEN}--- DEPLOY WEBSITE (UBUNTU 18.04 / PHP 7.4) ---${NC}"
-    echo "1. HTML5 / React (Static)"
+    echo -e "\n[ DEPLOY WEBSITE BARU ]"
+    echo "1. HTML5 / Static"
     echo "2. Node.js (Proxy)"
     echo "3. PHP 7.4 (Legacy)"
-    read -p "Pilih [1-3]: " TYPE
+    read -p "Pilih: " TYPE
     read -p "Domain: " DOMAIN
     read -p "Email SSL: " EMAIL
     CONFIG="/etc/nginx/sites-available/$DOMAIN"
@@ -60,33 +67,60 @@ deploy_web() {
         BLOCK="server { listen 80; server_name $DOMAIN www.$DOMAIN; location / { proxy_pass http://localhost:$PORT; proxy_http_version 1.1; proxy_set_header Upgrade \$http_upgrade; proxy_set_header Connection 'upgrade'; proxy_set_header Host \$host; proxy_cache_bypass \$http_upgrade; } }"
     elif [ "$TYPE" == "3" ]; then
         read -p "Folder Path: " ROOT
-        # Socket PHP 7.4
+        # Menggunakan PHP 7.4 Socket
         BLOCK="server { listen 80; server_name $DOMAIN www.$DOMAIN; root $ROOT; index index.php index.html; location / { try_files \$uri \$uri/ /index.php?\$query_string; } location ~ \.php$ { include snippets/fastcgi-php.conf; fastcgi_pass unix:/run/php/php7.4-fpm.sock; } }"
-    else
-        echo "Salah pilih."; return
-    fi
+    else echo "Salah pilih"; return; fi
 
     echo "$BLOCK" > $CONFIG
     ln -s $CONFIG /etc/nginx/sites-enabled/ 2>/dev/null
     nginx -t && systemctl reload nginx
-    # Certbot Command via Snap
     certbot --nginx --non-interactive --agree-tos -m $EMAIL -d $DOMAIN -d www.$DOMAIN
+    read -p "Sukses. Enter..."
 }
 
-clear
-echo -e "${CYAN}🐰 BUNNY DEPLOY (UBUNTU 18.04 LEGACY)${NC}"
-echo "1. Deploy Web"
-echo "2. Hapus Web"
-echo "3. PM2 Menu"
-echo "0. Keluar"
-read -p "Pilih: " OPT
-case $OPT in
-    1) deploy_web ;;
-    2) read -p "Domain hapus: " D; rm /etc/nginx/sites-enabled/$D /etc/nginx/sites-available/$D; certbot delete --cert-name $D; systemctl reload nginx; echo "Dihapus." ;;
-    3) pm2 list; read -p "Enter..." ;;
-    0) exit ;;
-esac
+delete_web() {
+    read -p "Domain yg dihapus: " D
+    rm /etc/nginx/sites-enabled/$D /etc/nginx/sites-available/$D
+    certbot delete --cert-name $D
+    systemctl reload nginx
+    echo "Website dihapus."
+    read -p "Enter..."
+}
+
+uninstall_bd() {
+    read -p "Hapus script bd? (y/n): " C
+    if [ "$C" == "y" ]; then rm /usr/local/bin/bd; echo "Script dihapus."; exit; fi
+}
+
+while true; do
+    show_header
+    echo "1. Deploy Website"
+    echo "2. Hapus Website"
+    echo "-----------------"
+    echo "3. List Aplikasi (PM2)"
+    echo "4. Restart App"
+    echo "5. Stop App"
+    echo "6. Delete App"
+    echo "7. Cek Logs"
+    echo "-----------------"
+    echo "8. Restart System (Nginx/PHP)"
+    echo "9. Uninstall Script"
+    echo "0. Keluar"
+    read -p "Pilih: " OPT
+    case $OPT in
+        1) deploy_web ;;
+        2) delete_web ;;
+        3) pm2 list; read -p "Enter..." ;;
+        4) read -p "ID: " I; pm2 restart $I; read -p "Enter..." ;;
+        5) read -p "ID: " I; pm2 stop $I; read -p "Enter..." ;;
+        6) read -p "ID: " I; pm2 delete $I; pm2 save; read -p "Enter..." ;;
+        7) read -p "ID: " I; pm2 logs $I ;;
+        8) systemctl restart nginx php7.4-fpm; echo "Refreshed."; read -p "Enter..." ;;
+        9) uninstall_bd ;;
+        0) exit ;;
+    esac
+done
 EOF
 
 chmod +x /usr/local/bin/bd
-echo "INSTALASI UBUNTU 18.04 SELESAI! Ketik: bd"
+echo "SELESAI. Ketik: bd"
