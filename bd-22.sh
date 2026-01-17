@@ -2,6 +2,7 @@
 # ===============================================
 #  BUNNY DEPLOY - PRECISION UI (BD-33)
 #  Code: Fixed Width + printf Alignment (OCD Friendly)
+#  Fixed: Color Encoding & Border Alignment
 # ===============================================
 
 # --- CONFIGURATION ---
@@ -15,7 +16,7 @@ APT_OPTS="-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
 # Cek Root
 if [ "$EUID" -ne 0 ]; then echo "Harap jalankan sebagai root (sudo -i)"; exit; fi
 
-echo "Memuat Interface BD-33..."
+echo "Memuat Interface BD-33 (Fixed UI)..."
 
 # 1. Basic Tools
 if ! command -v zip &> /dev/null; then
@@ -49,13 +50,13 @@ ufw allow OpenSSH >/dev/null 2>&1
 if ! ufw status | grep -q "Status: active"; then echo "y" | ufw enable >/dev/null 2>&1; fi
 
 # ==========================================
-# 6. GENERATE SCRIPT 'bd' (PRECISION UI)
+# 6. GENERATE SCRIPT 'bd' (PRECISION UI FIXED)
 # ==========================================
 cat << 'EOF' > /usr/local/bin/bd
 #!/bin/bash
-# COLORS
-CYAN='\033[0;36m'; WHITE='\033[1;37m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
-BOLD='\033[1m'
+# COLORS (ANSI-C Quoting for Correct Interpretation)
+CYAN=$'\e[0;36m'; WHITE=$'\e[1;37m'; GREEN=$'\e[0;32m'; YELLOW=$'\e[1;33m'; RED=$'\e[0;31m'; NC=$'\e[0m'
+BOLD=$'\e[1m'
 
 PHP_V="8.2"
 BACKUP_DIR="/root/backups"
@@ -69,19 +70,26 @@ draw_mid() { echo -e "${CYAN}├────────────────
 draw_bot() { echo -e "${CYAN}└────────────────────────────────────────────────────────┘${NC}"; }
 draw_div() { echo -e "${CYAN}├───────────────────────────┬────────────────────────────┤${NC}"; }
 
-# Fungsi Text Tengah (Centered)
+# Fungsi Text Tengah (Centered) - FIXED
+# Arg 1: Text
+# Arg 2: Color Variable (Optional)
 print_center() {
     local text="$1"
+    local color="${2:-$WHITE}" # Default color WHITE jika kosong
     local width=56
-    local padding=$(( (width - ${#text}) / 2 ))
-    printf "${CYAN}│${WHITE}%*s%s%*s${CYAN}│\n${NC}" $padding "" "$text" $(( width - padding - ${#text} )) ""
+    local len=${#text}
+    local padding=$(( (width - len) / 2 ))
+    local right_padding=$(( width - padding - len ))
+    
+    # Print: Border | Padding | Color+Text | Padding | Border
+    printf "${CYAN}│${NC}%*s${color}%s${NC}%*s${CYAN}│\n${NC}" $padding "" "$text" $right_padding ""
 }
 
 # Fungsi 2 Kolom (Split)
 print_row() {
     local left="$1"
     local right="$2"
-    # Kiri 27 char, Kanan 28 char (Total 55 + 1 separator)
+    # Kiri 27 char (1 spasi + 25 text + 1 spasi), Kanan 28 char
     printf "${CYAN}│${NC} %-25s ${CYAN}│${NC} %-26s ${CYAN}│\n${NC}" "$left" "$right"
 }
 
@@ -105,28 +113,29 @@ show_header() {
     get_sys_info
     clear
     draw_top
-    print_center "🐰 BUNNY DEPLOY - PRO MANAGER v33"
+    print_center "🐰 BUNNY DEPLOY - PRO MANAGER v33" "$WHITE"
     draw_div
     print_row "RAM : ${RAM_USED}/${RAM_TOTAL}MB ($RAM_PERC%)" "DISK: ${DISK_USED}/${DISK_TOTAL} ($DISK_PERC)"
     print_row "SWAP: ${SWAP_USED}/${SWAP_TOTAL}MB ($SWAP_PERC%)" "CPU : Load $LOAD"
     draw_mid
-    print_center "${YELLOW}CORE FEATURES${NC}"
+    # Kirim Warna sebagai Argumen ke-2 agar padding tidak error
+    print_center "CORE FEATURES" "$YELLOW"
     print_row "1. Deploy Website"       "4. Manage App (PM2)"
     print_row "2. Manage Web (Nginx)"   "5. Database Wizard"
     print_row "3. Git Pull Update"      "6. Backup Data"
     draw_mid
-    print_center "${YELLOW}UTILITIES${NC}"
+    print_center "UTILITIES" "$YELLOW"
     print_row "7. SWAP Manager"         "8. Cron Job"
     print_row "9. Update Tools"         "u. Uninstall"
     draw_mid
-    print_center "${RED}0. KELUAR (Exit)${NC}"
+    print_center "0. KELUAR (Exit)" "$RED"
     draw_bot
 }
 
 submenu_header() {
     clear
     draw_top
-    print_center "MENU: $1"
+    print_center "MENU: $1" "$WHITE"
     draw_mid
 }
 
