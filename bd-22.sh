@@ -1,6 +1,6 @@
 #!/bin/bash
 # ==========================================
-#  BUNNY DEPLOY - UBUNTU 22/24 (FULL FEATURES)
+#  BUNNY DEPLOY - UBUNTU 22/24 (ULTIMATE DB)
 #  Dev: Kang Sarip
 # ==========================================
 
@@ -41,6 +41,7 @@ echo "y" | ufw enable
 cat << 'EOF' > /usr/local/bin/bd
 #!/bin/bash
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
+VAULT="/root/.bd_db_vault.txt"
 
 show_header() {
     clear
@@ -80,72 +81,112 @@ deploy_web() {
 update_app() {
     echo -e "\n[ UPDATE APP/WEB (GIT PULL) ]"
     read -p "Masukkan Domain: " DOMAIN
-    # Cari path root dari config nginx
     ROOT=$(grep "root" /etc/nginx/sites-available/$DOMAIN 2>/dev/null | awk '{print $2}' | tr -d ';')
-    
-    # Jika tidak ketemu root (berarti mode Proxy/Nodejs), tanya manual
-    if [ -z "$ROOT" ]; then
-        read -p "Path Folder Project: " ROOT
-    fi
+    if [ -z "$ROOT" ]; then read -p "Path Folder Project: " ROOT; fi
 
     if [ -d "$ROOT/.git" ]; then
-        echo "Mengupdate Source Code di $ROOT..."
-        cd $ROOT
-        git pull
-        
-        # Cek jika Node.js, tawarkan npm install
+        echo "Updating $ROOT..."
+        cd $ROOT && git pull
         if [ -f "package.json" ]; then
-            echo "Mendeteksi Node.js..."
             npm install
-            read -p "Restart App di PM2? (y/n): " R
-            if [ "$R" == "y" ]; then
-                read -p "Masukkan ID App PM2: " ID
-                pm2 restart $ID
-            fi
+            read -p "Restart PM2? (y/n): " R
+            if [ "$R" == "y" ]; then read -p "ID App: " ID; pm2 restart $ID; fi
         fi
         echo -e "${GREEN}Update Selesai!${NC}"
     else
-        echo -e "${RED}Error: Folder $ROOT bukan Git Repository / Tidak ditemukan.${NC}"
+        echo -e "${RED}Bukan Git Repo.${NC}"
     fi
     read -p "Enter..."
 }
 
-system_update() {
-    echo "Mengupdate System Tools..."
-    apt update -y && apt upgrade -y
-    echo -e "${GREEN}System Updated.${NC}"
+# --- FITUR DATABASE BARU ---
+create_db() {
+    echo -e "\n[ BUAT DATABASE BARU ]"
+    read -p "Nama Database: " DBNAME
+    read -p "Username DB  : " DBUSER
+    read -p "Password DB  : " DBPASS
+    
+    mysql -e "CREATE DATABASE IF NOT EXISTS $DBNAME;"
+    mysql -e "CREATE USER IF NOT EXISTS '$DBUSER'@'localhost' IDENTIFIED BY '$DBPASS';"
+    mysql -e "GRANT ALL PRIVILEGES ON $DBNAME.* TO '$DBUSER'@'localhost';"
+    mysql -e "FLUSH PRIVILEGES;"
+    
+    # Simpan ke Brankas (Vault)
+    echo "$DBNAME|$DBUSER|$DBPASS" >> $VAULT
+    
+    echo -e "${GREEN}Database dibuat & disimpan ke vault!${NC}"
     read -p "Enter..."
 }
 
-# Database Menu
-create_db() {
-    read -p "DB Name: " D; read -p "DB User: " U; read -p "DB Pass: " P
-    mysql -e "CREATE DATABASE IF NOT EXISTS $D;"
-    mysql -e "CREATE USER IF NOT EXISTS '$U'@'localhost' IDENTIFIED BY '$P';"
-    mysql -e "GRANT ALL PRIVILEGES ON $D.* TO '$U'@'localhost';"
-    mysql -e "FLUSH PRIVILEGES;"
-    echo "DB Created."; read -p "Enter..."
+show_db_creds() {
+    echo -e "\n[ DAFTAR USER & PASSWORD DATABASE ]"
+    echo "Catatan: Hanya menampilkan DB yang dibuat lewat script ini."
+    echo "-----------------------------------------------------------"
+    printf "%-20s | %-20s | %-20s\n" "DATABASE" "USER" "PASSWORD"
+    echo "-----------------------------------------------------------"
+    if [ -f "$VAULT" ]; then
+        while IFS='|' read -r D U P; do
+            printf "%-20s | %-20s | %-20s\n" "$D" "$U" "$P"
+        done < $VAULT
+    else
+        echo "Belum ada data tersimpan."
+    fi
+    echo "-----------------------------------------------------------"
+    read -p "Enter..."
 }
 
-delete_db() {
-    read -p "DB Name: " D; mysql -e "DROP DATABASE IF EXISTS $D;"; echo "Deleted."; read -p "Enter..."
+view_db_content() {
+    echo -e "\n[ INTIP ISI DATABASE ]"
+    # List DB dulu
+    mysql -e "SHOW DATABASES;"
+    echo "---------------------------"
+    read -p "Pilih Nama Database: " DBNAME
+    
+    echo -e "\n[ Tabel di $DBNAME ]"
+    mysql -e "SHOW TABLES FROM $DBNAME;"
+    
+    echo -e "\nIngin melihat isi tabel?"
+    read -p "Masukkan Nama Tabel (atau 'n' untuk batal): " TNAME
+    if [ "$TNAME" != "n" ]; then
+        echo "----------------------------------------"
+        echo "Menampilkan 20 baris pertama data..."
+        mysql -e "SELECT * FROM $DBNAME.$TNAME LIMIT 20;"
+        echo "----------------------------------------"
+    fi
+    read -p "Enter..."
 }
 
-uninstall_bd() {
-    read -p "Hapus script? (y/n): " C; if [ "$C" == "y" ]; then rm /usr/local/bin/bd; exit; fi
+db_manager() {
+    while true; do
+        clear
+        echo -e "${YELLOW}--- DATABASE MANAGER ---${NC}"
+        echo "1. Buat Database Baru"
+        echo "2. Hapus Database"
+        echo "3. Lihat Password DB (Vault)"
+        echo "4. Lihat Isi Database (Tabel/Data)"
+        echo "0. Kembali"
+        read -p "Pilih: " DOPT
+        case $DOPT in
+            1) create_db ;;
+            2) read -p "Hapus DB Name: " D; mysql -e "DROP DATABASE IF EXISTS $D;"; echo "Dihapus."; read -p "Enter..." ;;
+            3) show_db_creds ;;
+            4) view_db_content ;;
+            0) break ;;
+        esac
+    done
 }
 
 while true; do
     show_header
-    echo "1. Deploy Website Baru"
-    echo "2. Update Web/App (Git Pull)"
+    echo "1. Deploy Website"
+    echo "2. Update Web/App"
     echo "3. Hapus Website"
     echo "-----------------"
-    echo "4. Database Manager (Buat/Hapus)"
-    echo "5. PM2 Manager (List/Logs/Stop)"
+    echo "4. Database Manager (New!)"
+    echo "5. PM2 Manager"
     echo "-----------------"
-    echo "6. Update System Tools (OS)"
-    echo "7. Restart Nginx/PHP"
+    echo "6. System Update"
+    echo "7. Restart Service"
     echo "8. Uninstall Script"
     echo "0. Keluar"
     read -p "Pilih: " OPT
@@ -153,11 +194,11 @@ while true; do
         1) deploy_web ;;
         2) update_app ;;
         3) read -p "Domain: " D; rm /etc/nginx/sites-enabled/$D /etc/nginx/sites-available/$D; certbot delete --cert-name $D; systemctl reload nginx; read -p "Deleted." ;;
-        4) echo "1. Create | 2. Delete"; read -p "Pilih: " DOPT; if [ $DOPT == 1 ]; then create_db; else delete_db; fi ;;
+        4) db_manager ;;
         5) pm2 list; echo "Logs/Restart/Stop?"; read -p "Command (logs/restart/stop [ID]): " C I; pm2 $C $I --lines 50 --nostream; read -p "Enter..." ;;
-        6) system_update ;;
+        6) apt update -y && apt upgrade -y; echo "Updated."; read -p "Enter..." ;;
         7) systemctl restart nginx php8.2-fpm; echo "Refreshed."; read -p "Enter..." ;;
-        8) uninstall_bd ;;
+        8) read -p "Hapus script? (y/n): " C; if [ "$C" == "y" ]; then rm /usr/local/bin/bd; exit; fi ;;
         0) exit ;;
     esac
 done
