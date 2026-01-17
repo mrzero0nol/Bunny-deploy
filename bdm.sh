@@ -1,8 +1,8 @@
 #!/bin/bash
 # ===============================================
-#  BUNNY DEPLOY - BD-60.1 (UI Refined)
+#  BUNNY DEPLOY MANAGER - v6.1
 #  Author: mrzero0nol
-#  Fitur: Lazy Load + Python + New UI Monitoring
+#  Fitur: Vertical Menu Ordering + New Branding
 # ===============================================
 
 # --- 1. CONFIG & PERSIAPAN AWAL ---
@@ -19,7 +19,6 @@ export LC_ALL=C
 if [ "$EUID" -ne 0 ]; then echo "Harap jalankan sebagai root (sudo -i)"; exit; fi
 
 # --- 2. INSTALL TOOLS DASAR ---
-# jq wajib ada untuk UI App Manager yang baru
 if ! command -v jq &> /dev/null; then
     echo "Install system tools..."
     apt update -y; apt install -y curl git unzip zip build-essential ufw software-properties-common mariadb-server bc jq
@@ -42,7 +41,7 @@ if ! command -v fail2ban-client &> /dev/null; then
 fi
 
 # ==========================================
-# 3. GENERATE SCRIPT UTAMA 'bd'
+# 3. GENERATE SCRIPT UTAMA
 # ==========================================
 cat << 'EOF' > /usr/local/bin/bd
 #!/bin/bash
@@ -54,6 +53,7 @@ source "$CONFIG_FILE" 2>/dev/null || UPLOAD_LIMIT="64M"
 
 BACKUP_DIR="/root/backups"
 mkdir -p $BACKUP_DIR
+# Link Update Baru
 UPDATE_URL="https://raw.githubusercontent.com/mrzero0nol/Bunny-deploy/main/bdm.sh"
 
 # --- HELPER: PATH FINDER ---
@@ -119,24 +119,13 @@ box_input() {
     printf -v "$2" '%s' "$temp_input"
 }
 
-# --- SYSTEM INFO (UPDATED: SWAP & CPU) ---
+# --- SYSTEM INFO ---
 get_sys_info() {
-    # RAM & Swap
     RAM=$(free -m | grep Mem | awk '{print $3"/"$2"MB"}')
     SWAP_USED=$(free -m | grep Swap | awk '{print $3}')
     SWAP_TOT=$(free -m | grep Swap | awk '{print $2}')
-    
-    if [ "$SWAP_TOT" == "0" ]; then
-        SWAP="0/0 (No Swap)"
-    else
-        SWAP="${SWAP_USED}/${SWAP_TOT}MB"
-    fi
-
-    # Disk
+    if [ "$SWAP_TOT" == "0" ]; then SWAP="0/0 (No Swap)"; else SWAP="${SWAP_USED}/${SWAP_TOT}MB"; fi
     DISK=$(df -h / | awk 'NR==2 {print $3"/"$2}')
-    
-    # CPU Load (Simple calculation)
-    # Mengambil idle time dari top, lalu 100 - idle = usage
     CPU_IDLE=$(top -bn1 | grep "Cpu(s)" | sed "s/.*, *\([0-9.]*\)%* id.*/\1/" | awk '{print $1}')
     CPU_USE=$(echo "100 - $CPU_IDLE" | bc)
     CPU="${CPU_USE}%"
@@ -148,22 +137,27 @@ show_header() {
     get_sys_info
     clear
     draw_line 1
-    box_center "BUNNY DEPLOY v60.1" "$WHITE"
+    # JUDUL BARU & VERSI DI BAWAHNYA
+    box_center "BUNNY DEPLOY MANAGER" "$WHITE"
+    box_center "v6.1" "$CYAN"
     draw_line 2
-    # Layout Monitoring Baru: 4 Kolom (2 Baris)
     box_row "RAM : $RAM"  "SWAP: $SWAP"
     box_row "DISK: $DISK" "CPU : $CPU"
     
     draw_line 2
     box_center "--- MAIN MENU ---" "$YELLOW"
-    box_row "1. Deploy Wizard"  "2. Manage Web"
-    box_row "3. App Manager"    "4. File Manager"
-    box_row "5. Database"       "6. Backup"
+    # URUTAN VERTIKAL (KE BAWAH DULU)
+    # Kiri: 1, 2, 3 | Kanan: 4, 5, 6
+    box_row "1. Deploy Wizard"  "4. File Manager"
+    box_row "2. Manage Web"     "5. Database"
+    box_row "3. App Manager"    "6. Backup"
     
     draw_line 2
     box_center "--- UTILITIES ---" "$YELLOW"
-    box_row "7. Cron Job"       "8. Upload Limit"
-    box_row "9. System Health"  "u. Uninstall"
+    # URUTAN VERTIKAL
+    # Kiri: 7, 8 | Kanan: 9, u
+    box_row "7. Cron Job"       "9. System Health"
+    box_row "8. Upload Limit"   "u. Uninstall"
     
     draw_line 2
     box_center "0. KELUAR (EXIT)" "$RED"
@@ -226,12 +220,31 @@ set_limit() {
     [ ! -z "$U" ] && UPLOAD_LIMIT=$U && echo "UPLOAD_LIMIT=\"$U\"" > "$CONFIG_FILE"
 }
 
+update_tool() {
+    echo "Mengecek update dari: $UPDATE_URL"
+    curl -sL "$UPDATE_URL" -o /tmp/bd_latest
+    if grep -q "#!/bin/bash" /tmp/bd_latest; then
+        mv /tmp/bd_latest /usr/local/bin/bd
+        chmod +x /usr/local/bin/bd
+        echo -e "${GREEN}Update Berhasil! Meluncurkan ulang...${NC}"
+        sleep 2
+        exec bd
+    else
+        echo -e "${RED}Gagal download update / Link salah.${NC}"
+        read -p "Enter..."
+    fi
+}
+
 # --- DEPLOY WIZARD ---
 deploy_web() {
     while true; do
         submenu_header "DEPLOY WIZARD"
-        box_row "1. HTML Static" "2. PHP Web"
-        box_row "3. Node.js App" "4. Python App"
+        # URUTAN VERTIKAL:
+        # Kiri: 1. HTML, 2. PHP
+        # Kanan: 3. Node, 4. Python
+        box_row "1. HTML Static" "3. Node.js App"
+        box_row "2. PHP Web"     "4. Python App"
+        
         box_center "0. Kembali" "$RED"
         draw_line 3
         
@@ -273,36 +286,28 @@ deploy_web() {
     done
 }
 
-# --- APP MANAGER (REFINED UI) ---
+# --- APP MANAGER ---
 manage_app() {
     if ! command -v pm2 &> /dev/null; then echo "PM2 belum terinstall."; sleep 1; return; fi
     while true; do
         submenu_header "APP MANAGER"
         
-        # HEADERS
         box_row "ID  NAME" "STATUS | RAM | CPU"
         draw_line 2
         
-        # PARSING PM2 DATA DENGAN JQ AGAR RAPI
-        # Mengambil JSON, loop, dan render via box_row
         JSON=$(pm2 jlist)
         COUNT=$(echo $JSON | jq '. | length')
         
         if [ "$COUNT" == "0" ]; then
             box_center "Tidak ada aplikasi berjalan" "$WHITE"
         else
-            # Loop data
             while read -r item; do
                 ID=$(echo "$item" | jq -r '.pm_id')
-                NAME=$(echo "$item" | jq -r '.name' | cut -c 1-15) # Potong nama jika kepanjangan
+                NAME=$(echo "$item" | jq -r '.name' | cut -c 1-15)
                 STATUS=$(echo "$item" | jq -r '.pm2_env.status')
                 MEM=$(echo "$item" | jq -r '.monit.memory' | awk '{ byte =$1 / 1024 / 1024; print byte "MB" }' | cut -d. -f1 | awk '{print $1"MB"}')
                 CPU=$(echo "$item" | jq -r '.monit.cpu')
-                
-                # Pewarnaan Status
                 if [ "$STATUS" == "online" ]; then S_COLOR="${GREEN}ON${NC}"; else S_COLOR="${RED}OFF${NC}"; fi
-                
-                # Format Baris agar masuk kotak
                 LEFT="$ID $NAME"
                 RIGHT="$S_COLOR | $MEM | ${CPU}%"
                 box_row "$LEFT" "$RIGHT"
@@ -310,8 +315,11 @@ manage_app() {
         fi
 
         draw_line 2
-        box_row "1. Restart" "2. Stop"
-        box_row "3. Delete"  "4. Logs"
+        # URUTAN VERTIKAL:
+        # Kiri: 1, 2 | Kanan: 3, 4
+        box_row "1. Restart App" "3. Delete App"
+        box_row "2. Stop App"    "4. View Logs"
+        
         box_center "0. Kembali" "$RED"
         draw_line 3
         
@@ -339,8 +347,9 @@ manage_web() {
             box_row "$domain" "$TYPE | $STATUS"
         done
         draw_line 2
-        box_row "1. ON/OFF" "2. Hapus"
-        box_row "3. Git Pull" "0. Kembali"
+        # URUTAN VERTIKAL
+        box_row "1. ON/OFF"  "3. Git Pull"
+        box_row "2. Hapus"   "0. Kembali"
         draw_line 3
         box_input "Pilih" W
         case $W in
@@ -380,10 +389,12 @@ while true; do
     case $OPT in
         1) deploy_web ;; 2) manage_web ;; 3) manage_app ;; 4) open_file_manager ;; 5) create_db ;; 6) backup_wizard ;; 7) echo "Manual: crontab -e"; sleep 1;; 8) set_limit ;; 
         9) system_health ;; 
+        # Untuk mengaktifkan update, uncomment baris bawah dan push file ini ke git
+        # 9) update_tool ;; 
         0) clear; exit ;; u) rm /usr/local/bin/bd; exit ;; *) echo "Invalid"; sleep 1 ;;
     esac
 done
 EOF
 
 chmod +x /usr/local/bin/bd
-echo -e "${GREEN}BD-60.1 UI Refined Terinstall.${NC}"
+echo -e "${GREEN}SUKSES: BUNNY DEPLOY MANAGER v6.1 Terinstall.${NC}"
