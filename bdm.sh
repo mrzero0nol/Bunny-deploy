@@ -35,9 +35,11 @@ if ! command -v nginx &> /dev/null; then
 fi
 
 # --- FIX: LONG DOMAIN NAME SUPPORT (NGINX) ---
+# Mengatasi error "could not build server_names_hash"
 if grep -q "# server_names_hash_bucket_size 64;" /etc/nginx/nginx.conf; then
     sed -i 's/# server_names_hash_bucket_size 64;/server_names_hash_bucket_size 64;/' /etc/nginx/nginx.conf
-    systemctl reload nginx
+    # Restart Nginx agar efeknya langsung terasa
+    systemctl restart nginx
 fi
 
 # Security
@@ -255,33 +257,18 @@ deploy_web() {
         box_input "Domain" DOMAIN; box_input "Email SSL" EMAIL
         ROOT="/var/www/$DOMAIN"; CONFIG="/etc/nginx/sites-available/$DOMAIN"
         
-        # --- NGINX SNIPPETS ---
-        # 1. Basic Optimization
         NGINX_OPTS="client_max_body_size ${UPLOAD_LIMIT}; fastcgi_read_timeout 300; error_log /var/log/nginx/error.log warn;"
-        
-        # 2. Security Headers (Anti XSS, Clickjacking, MIME sniffing)
         SEC_HEADERS="add_header X-Frame-Options \"SAMEORIGIN\"; add_header X-XSS-Protection \"1; mode=block\"; add_header X-Content-Type-Options \"nosniff\";"
-        
-        # 3. Block Hidden Files (PENTING: Mencegah akses ke .env, .git)
         DENY_FILES="location ~ /\.(?!well-known).* { deny all; access_log off; log_not_found off; }"
-        
-        # 4. Proxy Headers (PENTING: Agar Node/Python membaca Real IP Visitor)
         PROXY_PARAMS="proxy_http_version 1.1; proxy_set_header Upgrade \$http_upgrade; proxy_set_header Connection 'upgrade'; proxy_set_header Host \$host; proxy_set_header X-Real-IP \$remote_addr; proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for; proxy_set_header X-Forwarded-Proto \$scheme;"
 
-        # --- GENERATING CONFIG BLOCKS ---
-
         if [ "$TYPE" == "1" ]; then
-            # HTML STATIC
             box_input "Git URL" GIT; [ ! -z "$GIT" ] && (rm -rf $ROOT; git clone $GIT $ROOT) || mkdir -p $ROOT
             BLOCK="server { listen 80; server_name $DOMAIN; root $ROOT; index index.html; $SEC_HEADERS $NGINX_OPTS $DENY_FILES location / { try_files \$uri \$uri/ /index.html; } location = /favicon.ico { access_log off; log_not_found off; } location = /robots.txt { access_log off; log_not_found off; } }"
-        
         elif [ "$TYPE" == "2" ]; then
-            # PHP WEB
             box_input "Git URL" GIT; [ ! -z "$GIT" ] && (rm -rf $ROOT; git clone $GIT $ROOT; [ -f "$ROOT/composer.json" ] && cd $ROOT && composer install --no-dev; chown -R www-data:www-data $ROOT) || mkdir -p $ROOT
             BLOCK="server { listen 80; server_name $DOMAIN; root $ROOT; index index.php index.html; $SEC_HEADERS $NGINX_OPTS $DENY_FILES location / { try_files \$uri \$uri/ /index.php?\$query_string; } location ~ \.php$ { include snippets/fastcgi-php.conf; fastcgi_pass unix:/run/php/php$PHP_V-fpm.sock; } location = /favicon.ico { access_log off; log_not_found off; } location = /robots.txt { access_log off; log_not_found off; } }"
-        
         elif [ "$TYPE" == "3" ]; then
-            # NODE.JS APP
             box_input "Port (e.g 3000)" PORT; box_input "Git URL" GIT
             if [ ! -z "$GIT" ]; then 
                 git clone $GIT $ROOT
@@ -290,9 +277,7 @@ deploy_web() {
                 else echo -e "${RED}Gagal clone repo.${NC}"; read -p "Enter..."; continue; fi
             fi
             BLOCK="server { listen 80; server_name $DOMAIN; $SEC_HEADERS $NGINX_OPTS $DENY_FILES location / { proxy_pass http://localhost:$PORT; $PROXY_PARAMS } }"
-        
         elif [ "$TYPE" == "4" ]; then
-            # PYTHON APP
             box_input "Port (e.g 5000)" PORT; box_input "Git URL" GIT
             if [ ! -z "$GIT" ]; then 
                 git clone $GIT $ROOT
