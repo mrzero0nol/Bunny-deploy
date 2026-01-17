@@ -1,8 +1,8 @@
 #!/bin/bash
 # ===============================================
-#  BUNNY DEPLOY - PRECISION UI (BD-35)
+#  BUNNY DEPLOY - PRECISION UI (BD-37)
 #  Code: Fixed ANSI Colors + Smart Align
-#  Features: Node Select, Back Menu, Secure Headers
+#  Features: FULL GIT AUTO (HTML/Node/PHP)
 # ===============================================
 
 # --- CONFIGURATION ---
@@ -16,7 +16,7 @@ APT_OPTS="-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
 # Cek Root
 if [ "$EUID" -ne 0 ]; then echo "Harap jalankan sebagai root (sudo -i)"; exit; fi
 
-echo "Memuat Interface BD-35..."
+echo "Memuat Interface BD-37..."
 
 # 1. Basic Tools
 if ! command -v zip &> /dev/null; then
@@ -35,7 +35,7 @@ if ! command -v nginx &> /dev/null; then
     apt install -y $APT_OPTS php$DEFAULT_PHP php$DEFAULT_PHP-fpm php$DEFAULT_PHP-mysql php$DEFAULT_PHP-curl php$DEFAULT_PHP-xml php$DEFAULT_PHP-mbstring php$DEFAULT_PHP-zip php$DEFAULT_PHP-gd composer
 fi
 
-# 4. Base Node (Default)
+# 4. Base Node
 if ! command -v node &> /dev/null; then
     curl -fsSL https://deb.nodesource.com/setup_${DEFAULT_NODE}.x | bash -
     apt install -y $APT_OPTS nodejs
@@ -69,12 +69,10 @@ draw_div() { echo -e "${CYAN}├────────────────
 
 print_center() {
     local text="$1"
-    # FIX: Strip ANSI codes for correct length calculation
     local clean_text=$(echo -e "$text" | sed "s/\x1B\[[0-9;]*[a-zA-Z]//g")
     local width=56
     local padding=$(( (width - ${#clean_text}) / 2 ))
     local r_padding=$(( width - padding - ${#clean_text} ))
-    
     printf "${CYAN}│${WHITE}%*s%s%*s${CYAN}│\n${NC}" $padding "" "$text" $r_padding ""
 }
 
@@ -108,7 +106,7 @@ show_header() {
     get_sys_info
     clear
     draw_top
-    print_center "🐰 BUNNY DEPLOY - PRO MANAGER v35"
+    print_center "🐰 BUNNY DEPLOY - PRO MANAGER v37"
     draw_div
     print_row "RAM : ${RAM_USED}/${RAM_TOTAL}MB ($RAM_PERC%)" "DISK: ${DISK_USED}/${DISK_TOTAL} ($DISK_PERC)"
     print_row "SWAP: ${SWAP_INFO}" "CPU : Load $LOAD"
@@ -150,7 +148,7 @@ check_php_install() {
     echo "0) Kembali"
     read -p " ► Pilihan (0-3): " pv
     case $pv in
-        0) return 1 ;; # Signal Cancel
+        0) return 1 ;;
         1) T_VER="8.1" ;;
         2) T_VER="8.2" ;;
         3) T_VER="8.3" ;;
@@ -179,28 +177,24 @@ check_node_install() {
     echo "0) Kembali"
     read -p " ► Pilihan (0-3): " nv
     case $nv in
-        0) return 1 ;; # Cancel
+        0) return 1 ;;
         1) N_VER="18" ;;
         2) N_VER="20" ;;
         3) N_VER="22" ;;
         *) N_VER="20" ;;
     esac
 
-    # Cek versi node saat ini (simple check major version)
     CURRENT_NODE=$(node -v 2>/dev/null | cut -d'.' -f1 | tr -d 'v')
-    
     if [ "$CURRENT_NODE" != "$N_VER" ]; then
-        echo -e "${RED}Node v$N_VER belum aktif/terinstall (Saat ini: v${CURRENT_NODE:-None})${NC}"
+        echo -e "${RED}Node v$N_VER belum aktif.${NC}"
         read -p " ► Install/Switch ke v$N_VER? (y/n): " ins
         if [ "$ins" == "y" ]; then
             curl -fsSL https://deb.nodesource.com/setup_${N_VER}.x | bash -
             apt install -y nodejs
-            echo -e "${GREEN}Node.js v$N_VER berhasil diaktifkan.${NC}"
+            echo -e "${GREEN}Node.js v$N_VER aktif.${NC}"
         else
             return 1
         fi
-    else
-        echo -e "${GREEN}Node.js v$N_VER sudah aktif.${NC}"
     fi
     return 0
 }
@@ -214,39 +208,102 @@ deploy_web() {
         read -p " ► Pilih: " TYPE
         if [ "$TYPE" == "0" ]; then return; fi
         
-        # LOGIC SELECTION
         if [ "$TYPE" == "3" ]; then
-            check_php_install
-            if [ $? -eq 1 ]; then continue; fi
+            check_php_install; [ $? -eq 1 ] && continue
         elif [ "$TYPE" == "2" ]; then
-            check_node_install
-            if [ $? -eq 1 ]; then continue; fi
+            check_node_install; [ $? -eq 1 ] && continue
         fi
 
         read -p " ► Domain: " DOMAIN
         read -p " ► Email SSL: " EMAIL
         CONFIG="/etc/nginx/sites-available/$DOMAIN"
-        
-        # SECURITY & PERFORMANCE BLOCK
         SEC_HEADERS='add_header X-Frame-Options "SAMEORIGIN"; add_header X-XSS-Protection "1; mode=block"; add_header X-Content-Type-Options "nosniff";'
         GZIP_CONF='gzip on; gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript;'
         SECURE="location ~ /\.(?!well-known).* { deny all; return 404; }"
         
+        # --- HTML DEPLOY ---
         if [ "$TYPE" == "1" ]; then
-            read -p " Path: " ROOT; mkdir -p $ROOT
+            ROOT="/var/www/$DOMAIN"
+            echo -e "${CYAN}--- AUTO DEPLOY GIT (HTML) ---${NC}"
+            read -p " ► Punya Git Repo? (y/n): " IS_GIT
+            
+            if [ "$IS_GIT" == "y" ]; then
+                read -p " ► Link Git: " GIT_URL
+                if [ ! -z "$GIT_URL" ]; then
+                    echo "Cloning..."
+                    rm -rf $ROOT
+                    git clone $GIT_URL $ROOT
+                fi
+            else
+                read -p " ► Path Manual (Empty for default): " CUST_ROOT
+                [ ! -z "$CUST_ROOT" ] && ROOT=$CUST_ROOT
+                mkdir -p $ROOT
+            fi
+            
             BLOCK="server { listen 80; server_name $DOMAIN; root $ROOT; index index.html; $SEC_HEADERS $GZIP_CONF $SECURE location / { try_files \$uri \$uri/ /index.html; } }"
+
+        # --- NODE DEPLOY ---
         elif [ "$TYPE" == "2" ]; then
             read -p " Port App (Contoh 3000): " PORT
+            echo -e "${CYAN}--- AUTO DEPLOY GIT (NODE) ---${NC}"
+            read -p " ► Clone Git & Install? (y/n): " AUTO_SETUP
+            
+            if [ "$AUTO_SETUP" == "y" ]; then
+                APP_ROOT="/var/www/$DOMAIN"
+                read -p " ► Link Git: " GIT_URL
+                if [ ! -z "$GIT_URL" ]; then
+                    echo "Cloning..."
+                    git clone $GIT_URL $APP_ROOT
+                    if [ -d "$APP_ROOT" ]; then
+                        echo "Installing dependencies..."
+                        cd $APP_ROOT && npm install
+                        read -p " ► Main File (e.g. app.js): " START_FILE
+                        [ ! -z "$START_FILE" ] && pm2 start $START_FILE --name "$DOMAIN" && pm2 save
+                    fi
+                fi
+            fi
             BLOCK="server { listen 80; server_name $DOMAIN; $SEC_HEADERS $GZIP_CONF $SECURE location / { proxy_pass http://localhost:$PORT; proxy_http_version 1.1; proxy_set_header Upgrade \$http_upgrade; proxy_set_header Connection 'upgrade'; proxy_set_header Host \$host; proxy_cache_bypass \$http_upgrade; } }"
+        
+        # --- PHP DEPLOY ---
         elif [ "$TYPE" == "3" ]; then
-            read -p " Path: " ROOT; mkdir -p $ROOT
+            ROOT="/var/www/$DOMAIN"
+            echo -e "${CYAN}--- AUTO DEPLOY GIT (PHP) ---${NC}"
+            read -p " ► Punya Git Repo? (y/n): " IS_GIT
+            
+            if [ "$IS_GIT" == "y" ]; then
+                read -p " ► Link Git: " GIT_URL
+                if [ ! -z "$GIT_URL" ]; then
+                    echo "Cloning..."
+                    rm -rf $ROOT
+                    git clone $GIT_URL $ROOT
+                    if [ -f "$ROOT/composer.json" ]; then
+                        echo "Running Composer Install..."
+                        cd $ROOT && composer install --no-dev
+                    fi
+                    
+                    # Cek jika public folder (Laravel style)
+                    if [ -d "$ROOT/public" ]; then
+                        ROOT="$ROOT/public"
+                        echo "Terdeteksi struktur Laravel/CI4 (Root set ke /public)"
+                    fi
+                    
+                    # Fix permission awal
+                    fix_perm "/var/www/$DOMAIN"
+                fi
+            else
+                read -p " ► Path Manual (Empty for default): " CUST_ROOT
+                [ ! -z "$CUST_ROOT" ] && ROOT=$CUST_ROOT
+                mkdir -p $ROOT
+            fi
+
             BLOCK="server { listen 80; server_name $DOMAIN; root $ROOT; index index.php index.html; $SEC_HEADERS $GZIP_CONF $SECURE location / { try_files \$uri \$uri/ /index.php?\$query_string; } location ~ \.php$ { include snippets/fastcgi-php.conf; fastcgi_pass unix:/run/php/php$PHP_V-fpm.sock; } }"
         else continue; fi
 
+        # FINALIZE
         echo "$BLOCK" > $CONFIG; ln -s $CONFIG /etc/nginx/sites-enabled/ 2>/dev/null
         nginx -t
         if [ $? -eq 0 ]; then
-            systemctl reload nginx; [ ! -z "$ROOT" ] && fix_perm $ROOT
+            systemctl reload nginx
             certbot --nginx --non-interactive --agree-tos -m $EMAIL -d $DOMAIN
             echo -e "${GREEN}Deploy Berhasil! (Secured)${NC}"
         else rm $CONFIG; rm /etc/nginx/sites-enabled/$DOMAIN; echo "${RED}Gagal Config.${NC}"; fi
@@ -428,4 +485,4 @@ EOF
 
 chmod +x /usr/local/bin/bd
 echo -e "${GREEN}UPDATE SELESAI.${NC}"
-echo "Script BD-35 sudah terinstall. Jalankan dengan perintah: bd"
+echo "Sekarang HTML & PHP juga Auto-Git. Jalankan: bd"
