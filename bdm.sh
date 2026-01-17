@@ -1,8 +1,8 @@
 #!/bin/bash
 # ===============================================
-#  BUNNY DEPLOY MANAGER - v6.1
+#  BUNNY DEPLOY MANAGER - v6.3
 #  Author: mrzero0nol
-#  Fitur: Vertical Menu Ordering + New Branding
+#  Fitur: Update Enabled + Auto-Fix Nginx + Robust Check
 # ===============================================
 
 # --- 1. CONFIG & PERSIAPAN AWAL ---
@@ -34,6 +34,13 @@ if ! command -v nginx &> /dev/null; then
     apt install -y nginx certbot python3-certbot-nginx
 fi
 
+# --- FIX: LONG DOMAIN NAME SUPPORT (NGINX) ---
+# Mengatasi error "could not build server_names_hash"
+if grep -q "# server_names_hash_bucket_size 64;" /etc/nginx/nginx.conf; then
+    sed -i 's/# server_names_hash_bucket_size 64;/server_names_hash_bucket_size 64;/' /etc/nginx/nginx.conf
+    systemctl reload nginx
+fi
+
 # Security
 if ! command -v fail2ban-client &> /dev/null; then
     apt install -y fail2ban; cp /etc/fail2ban/jail.conf /etc/fail2ban/jail.local
@@ -53,7 +60,7 @@ source "$CONFIG_FILE" 2>/dev/null || UPLOAD_LIMIT="64M"
 
 BACKUP_DIR="/root/backups"
 mkdir -p $BACKUP_DIR
-# Link Update Baru
+# URL UPDATE DARI REPO ABANG
 UPDATE_URL="https://raw.githubusercontent.com/mrzero0nol/Bunny-deploy/main/bdm.sh"
 
 # --- HELPER: PATH FINDER ---
@@ -137,27 +144,25 @@ show_header() {
     get_sys_info
     clear
     draw_line 1
-    # JUDUL BARU & VERSI DI BAWAHNYA
     box_center "BUNNY DEPLOY MANAGER" "$WHITE"
-    box_center "v6.1" "$CYAN"
+    box_center "v6.3" "$CYAN"
     draw_line 2
     box_row "RAM : $RAM"  "SWAP: $SWAP"
     box_row "DISK: $DISK" "CPU : $CPU"
     
     draw_line 2
     box_center "--- MAIN MENU ---" "$YELLOW"
-    # URUTAN VERTIKAL (KE BAWAH DULU)
-    # Kiri: 1, 2, 3 | Kanan: 4, 5, 6
+    # Vertical Order
     box_row "1. Deploy Wizard"  "4. File Manager"
     box_row "2. Manage Web"     "5. Database"
     box_row "3. App Manager"    "6. Backup"
     
     draw_line 2
     box_center "--- UTILITIES ---" "$YELLOW"
-    # URUTAN VERTIKAL
-    # Kiri: 7, 8 | Kanan: 9, u
-    box_row "7. Cron Job"       "9. System Health"
-    box_row "8. Upload Limit"   "u. Uninstall"
+    # Vertical Order (9. Update, s. Health)
+    box_row "7. Cron Job"       "9. Update Tool"
+    box_row "8. Upload Limit"   "s. System Health"
+    box_row "u. Uninstall"      ""
     
     draw_line 2
     box_center "0. KELUAR (EXIT)" "$RED"
@@ -223,6 +228,7 @@ set_limit() {
 update_tool() {
     echo "Mengecek update dari: $UPDATE_URL"
     curl -sL "$UPDATE_URL" -o /tmp/bd_latest
+    # Cek apakah file valid
     if grep -q "#!/bin/bash" /tmp/bd_latest; then
         mv /tmp/bd_latest /usr/local/bin/bd
         chmod +x /usr/local/bin/bd
@@ -230,7 +236,7 @@ update_tool() {
         sleep 2
         exec bd
     else
-        echo -e "${RED}Gagal download update / Link salah.${NC}"
+        echo -e "${RED}Gagal download. Cek link/koneksi.${NC}"
         read -p "Enter..."
     fi
 }
@@ -239,12 +245,8 @@ update_tool() {
 deploy_web() {
     while true; do
         submenu_header "DEPLOY WIZARD"
-        # URUTAN VERTIKAL:
-        # Kiri: 1. HTML, 2. PHP
-        # Kanan: 3. Node, 4. Python
         box_row "1. HTML Static" "3. Node.js App"
         box_row "2. PHP Web"     "4. Python App"
-        
         box_center "0. Kembali" "$RED"
         draw_line 3
         
@@ -268,20 +270,32 @@ deploy_web() {
             BLOCK="server { listen 80; server_name $DOMAIN; root $ROOT; index index.php; $SEC location / { try_files \$uri \$uri/ /index.php?\$query_string; } location ~ \.php$ { include snippets/fastcgi-php.conf; fastcgi_pass unix:/run/php/php$PHP_V-fpm.sock; } }"
         elif [ "$TYPE" == "3" ]; then
             box_input "Port (e.g 3000)" PORT; box_input "Git URL" GIT
-            if [ ! -z "$GIT" ]; then git clone $GIT $ROOT; cd $ROOT && npm install; box_input "Start File" S; pm2 start $S --name "$DOMAIN" && pm2 save; fi
+            if [ ! -z "$GIT" ]; then 
+                git clone $GIT $ROOT
+                if [ -d "$ROOT" ]; then
+                    cd $ROOT && npm install; box_input "Start File" S; pm2 start $S --name "$DOMAIN" && pm2 save
+                else
+                    echo -e "${RED}Gagal clone repo.${NC}"; read -p "Enter..."; continue
+                fi
+            fi
             BLOCK="server { listen 80; server_name $DOMAIN; $SEC location / { proxy_pass http://localhost:$PORT; proxy_http_version 1.1; proxy_set_header Upgrade \$http_upgrade; proxy_set_header Connection 'upgrade'; proxy_set_header Host \$host; proxy_cache_bypass \$http_upgrade; } }"
         elif [ "$TYPE" == "4" ]; then
             box_input "Port (e.g 5000)" PORT; box_input "Git URL" GIT
             if [ ! -z "$GIT" ]; then 
-                git clone $GIT $ROOT; cd $ROOT; python3 -m venv venv; source venv/bin/activate
-                [ -f "requirements.txt" ] && pip install -r requirements.txt; pip install gunicorn
-                box_input "WSGI (e.g app:app)" W; pm2 start "gunicorn -w 4 -b 127.0.0.1:$PORT $W" --name "$DOMAIN" && pm2 save
+                git clone $GIT $ROOT
+                if [ -d "$ROOT" ]; then
+                    cd $ROOT; python3 -m venv venv; source venv/bin/activate
+                    [ -f "requirements.txt" ] && pip install -r requirements.txt; pip install gunicorn
+                    box_input "WSGI (e.g app:app)" W; pm2 start "gunicorn -w 4 -b 127.0.0.1:$PORT $W" --name "$DOMAIN" && pm2 save
+                else
+                    echo -e "${RED}Gagal clone repo.${NC}"; read -p "Enter..."; continue
+                fi
             fi
             BLOCK="server { listen 80; server_name $DOMAIN; $SEC location / { proxy_pass http://localhost:$PORT; proxy_http_version 1.1; proxy_set_header Upgrade \$http_upgrade; proxy_set_header Connection 'upgrade'; proxy_set_header Host \$host; proxy_cache_bypass \$http_upgrade; } }"
         fi
 
         echo "$BLOCK" > $CONFIG; ln -s $CONFIG /etc/nginx/sites-enabled/ 2>/dev/null; nginx -t
-        if [ $? -eq 0 ]; then systemctl reload nginx; certbot --nginx -n -m $EMAIL -d $DOMAIN --agree-tos; echo -e "${GREEN}Done!${NC}"; else echo -e "${RED}Error${NC}"; fi
+        if [ $? -eq 0 ]; then systemctl reload nginx; certbot --nginx -n -m $EMAIL -d $DOMAIN --agree-tos; echo -e "${GREEN}Done!${NC}"; else echo -e "${RED}Error Config${NC}"; fi
         read -p "Enter..."
     done
 }
@@ -291,13 +305,10 @@ manage_app() {
     if ! command -v pm2 &> /dev/null; then echo "PM2 belum terinstall."; sleep 1; return; fi
     while true; do
         submenu_header "APP MANAGER"
-        
         box_row "ID  NAME" "STATUS | RAM | CPU"
         draw_line 2
-        
         JSON=$(pm2 jlist)
         COUNT=$(echo $JSON | jq '. | length')
-        
         if [ "$COUNT" == "0" ]; then
             box_center "Tidak ada aplikasi berjalan" "$WHITE"
         else
@@ -313,16 +324,11 @@ manage_app() {
                 box_row "$LEFT" "$RIGHT"
             done <<< "$(echo $JSON | jq -c '.[]')"
         fi
-
         draw_line 2
-        # URUTAN VERTIKAL:
-        # Kiri: 1, 2 | Kanan: 3, 4
         box_row "1. Restart App" "3. Delete App"
         box_row "2. Stop App"    "4. View Logs"
-        
         box_center "0. Kembali" "$RED"
         draw_line 3
-        
         box_input "Pilih" P
         case $P in
             0) return ;;
@@ -347,7 +353,6 @@ manage_web() {
             box_row "$domain" "$TYPE | $STATUS"
         done
         draw_line 2
-        # URUTAN VERTIKAL
         box_row "1. ON/OFF"  "3. Git Pull"
         box_row "2. Hapus"   "0. Kembali"
         draw_line 3
@@ -388,13 +393,15 @@ while true; do
     box_input "Pilih Menu" OPT
     case $OPT in
         1) deploy_web ;; 2) manage_web ;; 3) manage_app ;; 4) open_file_manager ;; 5) create_db ;; 6) backup_wizard ;; 7) echo "Manual: crontab -e"; sleep 1;; 8) set_limit ;; 
-        9) system_health ;; 
-        # Untuk mengaktifkan update, uncomment baris bawah dan push file ini ke git
-        # 9) update_tool ;; 
+        
+        # MENU 9 AKTIF LAGI
+        9) update_tool ;;
+        s) system_health ;;
+        
         0) clear; exit ;; u) rm /usr/local/bin/bd; exit ;; *) echo "Invalid"; sleep 1 ;;
     esac
 done
 EOF
 
 chmod +x /usr/local/bin/bd
-echo -e "${GREEN}SUKSES: BUNNY DEPLOY MANAGER v6.1 Terinstall.${NC}"
+echo -e "${GREEN}SUKSES: BUNNY DEPLOY MANAGER v6.3 Terinstall.${NC}"
