@@ -1,6 +1,6 @@
 #!/bin/bash
 # ===============================================
-#  BUNNY DEPLOY - ULTIMATE (SECURE + BACKUP)
+#  BUNNY DEPLOY - ULTIMATE (FIXED NO WWW)
 #  Dev: Kang Sarip (Fixed by Gemini)
 # ===============================================
 
@@ -14,9 +14,9 @@ APT_OPTS="-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
 
 if [ "$EUID" -ne 0 ]; then echo "Harap jalankan sebagai root (sudo -i)"; exit; fi
 
-echo "Installing Bunny Deploy Ultimate..."
+echo "Updating Bunny Deploy..."
 
-# 1. Update & Tools (Added 'zip')
+# 1. Update & Tools
 apt update -y
 apt upgrade -y $APT_OPTS
 apt install -y $APT_OPTS curl git unzip zip build-essential ufw software-properties-common mariadb-server
@@ -46,7 +46,7 @@ ufw allow 'Nginx Full'
 ufw allow OpenSSH
 if ! ufw status | grep -q "Status: active"; then echo "y" | ufw enable; fi
 
-# 6. Create Command 'bd'
+# 6. Create Command 'bd' (FIXED VERSION)
 cat << EOF > /usr/local/bin/bd
 #!/bin/bash
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
@@ -56,7 +56,7 @@ BACKUP_DIR="/root/backups"
 show_header() {
     clear
     echo -e "\${BLUE}======================================\${NC}"
-    echo -e "\${YELLOW}   BUNNY DEPLOY - ULTIMATE EDITION\${NC}"
+    echo -e "\${YELLOW}   BUNNY DEPLOY - ULTIMATE (FIXED)\${NC}"
     echo -e "\${BLUE}======================================\${NC}"
 }
 
@@ -75,13 +75,13 @@ deploy_web() {
 
     if [ "\$TYPE" == "1" ]; then
         read -p "Folder Path: " ROOT
-        BLOCK="server { listen 80; server_name \$DOMAIN www.\$DOMAIN; root \$ROOT; index index.html; location / { try_files \\\$uri \\\$uri/ /index.html; } }"
+        BLOCK="server { listen 80; server_name \$DOMAIN; root \$ROOT; index index.html; location / { try_files \\\$uri \\\$uri/ /index.html; } }"
     elif [ "\$TYPE" == "2" ]; then
         read -p "Port App: " PORT
-        BLOCK="server { listen 80; server_name \$DOMAIN www.\$DOMAIN; location / { proxy_pass http://localhost:\$PORT; proxy_http_version 1.1; proxy_set_header Upgrade \\\$http_upgrade; proxy_set_header Connection 'upgrade'; proxy_set_header Host \\\$host; proxy_cache_bypass \\\$http_upgrade; } }"
+        BLOCK="server { listen 80; server_name \$DOMAIN; location / { proxy_pass http://localhost:\$PORT; proxy_http_version 1.1; proxy_set_header Upgrade \\\$http_upgrade; proxy_set_header Connection 'upgrade'; proxy_set_header Host \\\$host; proxy_cache_bypass \\\$http_upgrade; } }"
     elif [ "\$TYPE" == "3" ]; then
         read -p "Folder Path: " ROOT
-        BLOCK="server { listen 80; server_name \$DOMAIN www.\$DOMAIN; root \$ROOT; index index.php index.html; location / { try_files \\\$uri \\\$uri/ /index.php?\\\$query_string; } location ~ \.php$ { include snippets/fastcgi-php.conf; fastcgi_pass unix:/run/php/php\$PHP_V-fpm.sock; } }"
+        BLOCK="server { listen 80; server_name \$DOMAIN; root \$ROOT; index index.php index.html; location / { try_files \\\$uri \\\$uri/ /index.php?\\\$query_string; } location ~ \.php$ { include snippets/fastcgi-php.conf; fastcgi_pass unix:/run/php/php\$PHP_V-fpm.sock; } }"
     else echo "Salah pilih"; return; fi
 
     echo "\$BLOCK" > \$CONFIG
@@ -90,7 +90,8 @@ deploy_web() {
     nginx -t
     if [ \$? -eq 0 ]; then
         systemctl reload nginx
-        certbot --nginx --non-interactive --agree-tos -m \$EMAIL -d \$DOMAIN -d www.\$DOMAIN
+        # FIX: Hapus -d www.\$DOMAIN agar subdomain aman
+        certbot --nginx --non-interactive --agree-tos -m \$EMAIL -d \$DOMAIN
         echo -e "\${GREEN}Deploy Sukses!\${NC}"
     else
         echo -e "\${RED}Config Error. Rollback.\${NC}"; rm \$CONFIG; rm /etc/nginx/sites-enabled/\$DOMAIN
@@ -133,7 +134,6 @@ create_db() {
     read -p "Enter..."
 }
 
-# --- FITUR BACKUP BARU ---
 backup_wizard() {
     mkdir -p \$BACKUP_DIR
     echo -e "\n\${YELLOW}[ BACKUP WIZARD ]\${NC}"
@@ -198,7 +198,7 @@ while true; do
     case \$OPT in
         1) deploy_web ;;
         2) update_app ;;
-        3) create_db ;; # Simplified menu
+        3) create_db ;;
         4) pm2 list; read -p "Cmd: " C; \$C; read -p "..." ;;
         9) backup_wizard ;;
         8) uninstall_script ;;
