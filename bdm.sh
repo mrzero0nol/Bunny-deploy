@@ -1,8 +1,8 @@
 #!/bin/bash
 # ===============================================
-#  BUNNY DEPLOY MANAGER - v6.3
+#  BUNNY DEPLOY MANAGER - v6.4
 #  Author: mrzero0nol
-#  Fitur: Update Enabled + Auto-Fix Nginx + Robust Check
+#  Fitur: Nginx Hardening + Real IP Fix + Security Headers
 # ===============================================
 
 # --- 1. CONFIG & PERSIAPAN AWAL ---
@@ -35,7 +35,6 @@ if ! command -v nginx &> /dev/null; then
 fi
 
 # --- FIX: LONG DOMAIN NAME SUPPORT (NGINX) ---
-# Mengatasi error "could not build server_names_hash"
 if grep -q "# server_names_hash_bucket_size 64;" /etc/nginx/nginx.conf; then
     sed -i 's/# server_names_hash_bucket_size 64;/server_names_hash_bucket_size 64;/' /etc/nginx/nginx.conf
     systemctl reload nginx
@@ -60,7 +59,6 @@ source "$CONFIG_FILE" 2>/dev/null || UPLOAD_LIMIT="64M"
 
 BACKUP_DIR="/root/backups"
 mkdir -p $BACKUP_DIR
-# URL UPDATE DARI REPO ABANG
 UPDATE_URL="https://raw.githubusercontent.com/mrzero0nol/Bunny-deploy/main/bdm.sh"
 
 # --- HELPER: PATH FINDER ---
@@ -145,21 +143,19 @@ show_header() {
     clear
     draw_line 1
     box_center "BUNNY DEPLOY MANAGER" "$WHITE"
-    box_center "v6.3" "$CYAN"
+    box_center "v6.4 (Secured)" "$CYAN"
     draw_line 2
     box_row "RAM : $RAM"  "SWAP: $SWAP"
     box_row "DISK: $DISK" "CPU : $CPU"
     
     draw_line 2
     box_center "--- MAIN MENU ---" "$YELLOW"
-    # Vertical Order
     box_row "1. Deploy Wizard"  "4. File Manager"
     box_row "2. Manage Web"     "5. Database"
     box_row "3. App Manager"    "6. Backup"
     
     draw_line 2
     box_center "--- UTILITIES ---" "$YELLOW"
-    # Vertical Order (9. Update, s. Health)
     box_row "7. Cron Job"       "9. Update Tool"
     box_row "8. Upload Limit"   "s. System Health"
     box_row "u. Uninstall"      ""
@@ -228,7 +224,6 @@ set_limit() {
 update_tool() {
     echo "Mengecek update dari: $UPDATE_URL"
     curl -sL "$UPDATE_URL" -o /tmp/bd_latest
-    # Cek apakah file valid
     if grep -q "#!/bin/bash" /tmp/bd_latest; then
         mv /tmp/bd_latest /usr/local/bin/bd
         chmod +x /usr/local/bin/bd
@@ -241,7 +236,7 @@ update_tool() {
     fi
 }
 
-# --- DEPLOY WIZARD ---
+# --- DEPLOY WIZARD (NGINX FIXED) ---
 deploy_web() {
     while true; do
         submenu_header "DEPLOY WIZARD"
@@ -259,27 +254,45 @@ deploy_web() {
 
         box_input "Domain" DOMAIN; box_input "Email SSL" EMAIL
         ROOT="/var/www/$DOMAIN"; CONFIG="/etc/nginx/sites-available/$DOMAIN"
-        NGINX_OPTS="client_max_body_size ${UPLOAD_LIMIT}; fastcgi_read_timeout 300;"
-        SEC="add_header X-Frame-Options \"SAMEORIGIN\"; add_header X-XSS-Protection \"1; mode=block\";"
+        
+        # --- NGINX SNIPPETS ---
+        # 1. Basic Optimization
+        NGINX_OPTS="client_max_body_size ${UPLOAD_LIMIT}; fastcgi_read_timeout 300; error_log /var/log/nginx/error.log warn;"
+        
+        # 2. Security Headers (Anti XSS, Clickjacking, MIME sniffing)
+        SEC_HEADERS="add_header X-Frame-Options \"SAMEORIGIN\"; add_header X-XSS-Protection \"1; mode=block\"; add_header X-Content-Type-Options \"nosniff\";"
+        
+        # 3. Block Hidden Files (PENTING: Mencegah akses ke .env, .git)
+        DENY_FILES="location ~ /\.(?!well-known).* { deny all; access_log off; log_not_found off; }"
+        
+        # 4. Proxy Headers (PENTING: Agar Node/Python membaca Real IP Visitor)
+        PROXY_PARAMS="proxy_http_version 1.1; proxy_set_header Upgrade \$http_upgrade; proxy_set_header Connection 'upgrade'; proxy_set_header Host \$host; proxy_set_header X-Real-IP \$remote_addr; proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for; proxy_set_header X-Forwarded-Proto \$scheme;"
+
+        # --- GENERATING CONFIG BLOCKS ---
 
         if [ "$TYPE" == "1" ]; then
+            # HTML STATIC
             box_input "Git URL" GIT; [ ! -z "$GIT" ] && (rm -rf $ROOT; git clone $GIT $ROOT) || mkdir -p $ROOT
-            BLOCK="server { listen 80; server_name $DOMAIN; root $ROOT; index index.html; $SEC location / { try_files \$uri \$uri/ /index.html; } }"
+            BLOCK="server { listen 80; server_name $DOMAIN; root $ROOT; index index.html; $SEC_HEADERS $NGINX_OPTS $DENY_FILES location / { try_files \$uri \$uri/ /index.html; } location = /favicon.ico { access_log off; log_not_found off; } location = /robots.txt { access_log off; log_not_found off; } }"
+        
         elif [ "$TYPE" == "2" ]; then
+            # PHP WEB
             box_input "Git URL" GIT; [ ! -z "$GIT" ] && (rm -rf $ROOT; git clone $GIT $ROOT; [ -f "$ROOT/composer.json" ] && cd $ROOT && composer install --no-dev; chown -R www-data:www-data $ROOT) || mkdir -p $ROOT
-            BLOCK="server { listen 80; server_name $DOMAIN; root $ROOT; index index.php; $SEC location / { try_files \$uri \$uri/ /index.php?\$query_string; } location ~ \.php$ { include snippets/fastcgi-php.conf; fastcgi_pass unix:/run/php/php$PHP_V-fpm.sock; } }"
+            BLOCK="server { listen 80; server_name $DOMAIN; root $ROOT; index index.php index.html; $SEC_HEADERS $NGINX_OPTS $DENY_FILES location / { try_files \$uri \$uri/ /index.php?\$query_string; } location ~ \.php$ { include snippets/fastcgi-php.conf; fastcgi_pass unix:/run/php/php$PHP_V-fpm.sock; } location = /favicon.ico { access_log off; log_not_found off; } location = /robots.txt { access_log off; log_not_found off; } }"
+        
         elif [ "$TYPE" == "3" ]; then
+            # NODE.JS APP
             box_input "Port (e.g 3000)" PORT; box_input "Git URL" GIT
             if [ ! -z "$GIT" ]; then 
                 git clone $GIT $ROOT
                 if [ -d "$ROOT" ]; then
                     cd $ROOT && npm install; box_input "Start File" S; pm2 start $S --name "$DOMAIN" && pm2 save
-                else
-                    echo -e "${RED}Gagal clone repo.${NC}"; read -p "Enter..."; continue
-                fi
+                else echo -e "${RED}Gagal clone repo.${NC}"; read -p "Enter..."; continue; fi
             fi
-            BLOCK="server { listen 80; server_name $DOMAIN; $SEC location / { proxy_pass http://localhost:$PORT; proxy_http_version 1.1; proxy_set_header Upgrade \$http_upgrade; proxy_set_header Connection 'upgrade'; proxy_set_header Host \$host; proxy_cache_bypass \$http_upgrade; } }"
+            BLOCK="server { listen 80; server_name $DOMAIN; $SEC_HEADERS $NGINX_OPTS $DENY_FILES location / { proxy_pass http://localhost:$PORT; $PROXY_PARAMS } }"
+        
         elif [ "$TYPE" == "4" ]; then
+            # PYTHON APP
             box_input "Port (e.g 5000)" PORT; box_input "Git URL" GIT
             if [ ! -z "$GIT" ]; then 
                 git clone $GIT $ROOT
@@ -287,15 +300,13 @@ deploy_web() {
                     cd $ROOT; python3 -m venv venv; source venv/bin/activate
                     [ -f "requirements.txt" ] && pip install -r requirements.txt; pip install gunicorn
                     box_input "WSGI (e.g app:app)" W; pm2 start "gunicorn -w 4 -b 127.0.0.1:$PORT $W" --name "$DOMAIN" && pm2 save
-                else
-                    echo -e "${RED}Gagal clone repo.${NC}"; read -p "Enter..."; continue
-                fi
+                else echo -e "${RED}Gagal clone repo.${NC}"; read -p "Enter..."; continue; fi
             fi
-            BLOCK="server { listen 80; server_name $DOMAIN; $SEC location / { proxy_pass http://localhost:$PORT; proxy_http_version 1.1; proxy_set_header Upgrade \$http_upgrade; proxy_set_header Connection 'upgrade'; proxy_set_header Host \$host; proxy_cache_bypass \$http_upgrade; } }"
+            BLOCK="server { listen 80; server_name $DOMAIN; $SEC_HEADERS $NGINX_OPTS $DENY_FILES location / { proxy_pass http://localhost:$PORT; $PROXY_PARAMS } }"
         fi
 
         echo "$BLOCK" > $CONFIG; ln -s $CONFIG /etc/nginx/sites-enabled/ 2>/dev/null; nginx -t
-        if [ $? -eq 0 ]; then systemctl reload nginx; certbot --nginx -n -m $EMAIL -d $DOMAIN --agree-tos; echo -e "${GREEN}Done!${NC}"; else echo -e "${RED}Error Config${NC}"; fi
+        if [ $? -eq 0 ]; then systemctl reload nginx; certbot --nginx -n -m $EMAIL -d $DOMAIN --agree-tos; echo -e "${GREEN}Done!${NC}"; else echo -e "${RED}Error Config Nginx${NC}"; fi
         read -p "Enter..."
     done
 }
@@ -393,15 +404,12 @@ while true; do
     box_input "Pilih Menu" OPT
     case $OPT in
         1) deploy_web ;; 2) manage_web ;; 3) manage_app ;; 4) open_file_manager ;; 5) create_db ;; 6) backup_wizard ;; 7) echo "Manual: crontab -e"; sleep 1;; 8) set_limit ;; 
-        
-        # MENU 9 AKTIF LAGI
         9) update_tool ;;
         s) system_health ;;
-        
         0) clear; exit ;; u) rm /usr/local/bin/bd; exit ;; *) echo "Invalid"; sleep 1 ;;
     esac
 done
 EOF
 
 chmod +x /usr/local/bin/bd
-echo -e "${GREEN}SUKSES: BUNNY DEPLOY MANAGER v6.3 Terinstall.${NC}"
+echo -e "${GREEN}SUKSES: BUNNY DEPLOY MANAGER v6.4 (Secured) Terinstall.${NC}"
