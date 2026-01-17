@@ -1,13 +1,13 @@
 #!/bin/bash
 # ===============================================
-#  BUNNY DEPLOY - PRECISION UI (BD-34)
-#  Code: Fixed Width + printf Alignment
-#  Features: Smart Install, Security Headers, Safe Update
+#  BUNNY DEPLOY - PRECISION UI (BD-35)
+#  Code: Fixed ANSI Colors + Smart Align
+#  Features: Node Select, Back Menu, Secure Headers
 # ===============================================
 
 # --- CONFIGURATION ---
 DEFAULT_PHP="8.2"
-NODE_VER="20"
+DEFAULT_NODE="20"
 # ---------------------
 
 export DEBIAN_FRONTEND=noninteractive
@@ -16,7 +16,7 @@ APT_OPTS="-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
 # Cek Root
 if [ "$EUID" -ne 0 ]; then echo "Harap jalankan sebagai root (sudo -i)"; exit; fi
 
-echo "Memuat Interface BD-34..."
+echo "Memuat Interface BD-35..."
 
 # 1. Basic Tools
 if ! command -v zip &> /dev/null; then
@@ -27,7 +27,7 @@ fi
 systemctl start mariadb >/dev/null 2>&1
 systemctl enable mariadb >/dev/null 2>&1
 
-# 3. Base PHP/Nginx (Install Default 8.2 first)
+# 3. Base PHP/Nginx
 if ! command -v nginx &> /dev/null; then
     add-apt-repository -y ppa:ondrej/php
     apt update -y
@@ -35,9 +35,9 @@ if ! command -v nginx &> /dev/null; then
     apt install -y $APT_OPTS php$DEFAULT_PHP php$DEFAULT_PHP-fpm php$DEFAULT_PHP-mysql php$DEFAULT_PHP-curl php$DEFAULT_PHP-xml php$DEFAULT_PHP-mbstring php$DEFAULT_PHP-zip php$DEFAULT_PHP-gd composer
 fi
 
-# 4. Install Node
+# 4. Base Node (Default)
 if ! command -v node &> /dev/null; then
-    curl -fsSL https://deb.nodesource.com/setup_${NODE_VER}.x | bash -
+    curl -fsSL https://deb.nodesource.com/setup_${DEFAULT_NODE}.x | bash -
     apt install -y $APT_OPTS nodejs
 fi
 if ! command -v pm2 &> /dev/null; then
@@ -54,10 +54,10 @@ if ! ufw status | grep -q "Status: active"; then echo "y" | ufw enable >/dev/nul
 # ==========================================
 cat << 'EOF' > /usr/local/bin/bd
 #!/bin/bash
-# COLORS
-CYAN='\033[0;36m'; WHITE='\033[1;37m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
+# COLORS (ANSI-C Quoting for Fix UI)
+CYAN=$'\e[0;36m'; WHITE=$'\e[1;37m'; GREEN=$'\e[0;32m'; YELLOW=$'\e[1;33m'; RED=$'\e[0;31m'; NC=$'\e[0m'
 
-PHP_V="8.2" # Default
+PHP_V="8.2"
 BACKUP_DIR="/root/backups"
 UPDATE_URL="https://raw.githubusercontent.com/mrzero0nol/Bunny-deploy/refs/heads/main/bd-22.sh"
 
@@ -69,9 +69,13 @@ draw_div() { echo -e "${CYAN}├────────────────
 
 print_center() {
     local text="$1"
+    # FIX: Strip ANSI codes for correct length calculation
+    local clean_text=$(echo -e "$text" | sed "s/\x1B\[[0-9;]*[a-zA-Z]//g")
     local width=56
-    local padding=$(( (width - ${#text}) / 2 ))
-    printf "${CYAN}│${WHITE}%*s%s%*s${CYAN}│\n${NC}" $padding "" "$text" $(( width - padding - ${#text} )) ""
+    local padding=$(( (width - ${#clean_text}) / 2 ))
+    local r_padding=$(( width - padding - ${#clean_text} ))
+    
+    printf "${CYAN}│${WHITE}%*s%s%*s${CYAN}│\n${NC}" $padding "" "$text" $r_padding ""
 }
 
 print_row() {
@@ -104,7 +108,7 @@ show_header() {
     get_sys_info
     clear
     draw_top
-    print_center "🐰 BUNNY DEPLOY - PRO MANAGER v34"
+    print_center "🐰 BUNNY DEPLOY - PRO MANAGER v35"
     draw_div
     print_row "RAM : ${RAM_USED}/${RAM_TOTAL}MB ($RAM_PERC%)" "DISK: ${DISK_USED}/${DISK_TOTAL} ($DISK_PERC)"
     print_row "SWAP: ${SWAP_INFO}" "CPU : Load $LOAD"
@@ -143,8 +147,10 @@ check_php_install() {
     echo "1) PHP 8.1"
     echo "2) PHP 8.2 (Default)"
     echo "3) PHP 8.3"
-    read -p " ► Pilihan (1-3): " pv
+    echo "0) Kembali"
+    read -p " ► Pilihan (0-3): " pv
     case $pv in
+        0) return 1 ;; # Signal Cancel
         1) T_VER="8.1" ;;
         2) T_VER="8.2" ;;
         3) T_VER="8.3" ;;
@@ -165,6 +171,40 @@ check_php_install() {
     return 0
 }
 
+check_node_install() {
+    echo -e "${YELLOW}Pilih Versi Node.js:${NC}"
+    echo "1) Node.js v18 (LTS)"
+    echo "2) Node.js v20 (LTS Default)"
+    echo "3) Node.js v22 (Current)"
+    echo "0) Kembali"
+    read -p " ► Pilihan (0-3): " nv
+    case $nv in
+        0) return 1 ;; # Cancel
+        1) N_VER="18" ;;
+        2) N_VER="20" ;;
+        3) N_VER="22" ;;
+        *) N_VER="20" ;;
+    esac
+
+    # Cek versi node saat ini (simple check major version)
+    CURRENT_NODE=$(node -v 2>/dev/null | cut -d'.' -f1 | tr -d 'v')
+    
+    if [ "$CURRENT_NODE" != "$N_VER" ]; then
+        echo -e "${RED}Node v$N_VER belum aktif/terinstall (Saat ini: v${CURRENT_NODE:-None})${NC}"
+        read -p " ► Install/Switch ke v$N_VER? (y/n): " ins
+        if [ "$ins" == "y" ]; then
+            curl -fsSL https://deb.nodesource.com/setup_${N_VER}.x | bash -
+            apt install -y nodejs
+            echo -e "${GREEN}Node.js v$N_VER berhasil diaktifkan.${NC}"
+        else
+            return 1
+        fi
+    else
+        echo -e "${GREEN}Node.js v$N_VER sudah aktif.${NC}"
+    fi
+    return 0
+}
+
 deploy_web() {
     while true; do
         submenu_header "DEPLOY NEW WEBSITE"
@@ -174,9 +214,12 @@ deploy_web() {
         read -p " ► Pilih: " TYPE
         if [ "$TYPE" == "0" ]; then return; fi
         
-        # PHP Version Check
+        # LOGIC SELECTION
         if [ "$TYPE" == "3" ]; then
             check_php_install
+            if [ $? -eq 1 ]; then continue; fi
+        elif [ "$TYPE" == "2" ]; then
+            check_node_install
             if [ $? -eq 1 ]; then continue; fi
         fi
 
@@ -284,9 +327,7 @@ backup_wizard() {
         if [ "$B" == "0" ]; then return; fi
         if [ "$B" == "1" ]; then
             read -p " Domain: " DOM
-            # FIX: Menggunakan AWK agar tidak salah baca config yang dikomentari
             ROOT=$(awk '/root/ && !/^[ \t]*#/ {print $2}' /etc/nginx/sites-available/$DOM 2>/dev/null | tr -d ';')
-            
             [ -z "$ROOT" ] && read -p " Path: " ROOT
             read -p " DB Name (Opt): " DB
             FILE="backup_${DOM}_$(date +%F_%H%M).zip"; TMP="/tmp/dump.sql"
@@ -340,7 +381,6 @@ cron_manager() {
 update_app_git() {
     submenu_header "GIT UPDATE"
     read -p " Domain: " D
-    # FIX: Logic pencarian root yang sama dengan backup
     ROOT=$(awk '/root/ && !/^[ \t]*#/ {print $2}' /etc/nginx/sites-available/$D 2>/dev/null | tr -d ';')
     [ -z "$ROOT" ] && ROOT=$D
     if [ -d "$ROOT/.git" ]; then
@@ -353,7 +393,6 @@ update_app_git() {
 update_tool() {
     echo "Checking for updates..."
     curl -sL "$UPDATE_URL" -o /tmp/bd_latest
-    # Sanity Check: Pastikan file tidak kosong dan adalah bash script
     if [ -s /tmp/bd_latest ] && grep -q "#!/bin/bash" /tmp/bd_latest; then 
         mv /tmp/bd_latest /usr/local/bin/bd
         chmod +x /usr/local/bin/bd
@@ -389,4 +428,4 @@ EOF
 
 chmod +x /usr/local/bin/bd
 echo -e "${GREEN}UPDATE SELESAI.${NC}"
-echo "Ketik 'bd' untuk menjalankan Bunny Deploy v34 (Secure)."
+echo "Script BD-35 sudah terinstall. Jalankan dengan perintah: bd"
