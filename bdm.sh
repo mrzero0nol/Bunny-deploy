@@ -1,8 +1,8 @@
 #!/bin/bash
 # ===============================================
-#  BUNNY DEPLOY MANAGER - v6.4
+#  BUNNY DEPLOY MANAGER - v6.5 (Final Stabil)
 #  Author: mrzero0nol
-#  Fitur: Nginx Hardening + Real IP Fix + Security Headers
+#  Fitur: Nginx Hash 128 (Strong) + Auto Fix Git URL
 # ===============================================
 
 # --- 1. CONFIG & PERSIAPAN AWAL ---
@@ -34,13 +34,22 @@ if ! command -v nginx &> /dev/null; then
     apt install -y nginx certbot python3-certbot-nginx
 fi
 
-# --- FIX: LONG DOMAIN NAME SUPPORT (NGINX) ---
-# Mengatasi error "could not build server_names_hash"
-if grep -q "# server_names_hash_bucket_size 64;" /etc/nginx/nginx.conf; then
-    sed -i 's/# server_names_hash_bucket_size 64;/server_names_hash_bucket_size 64;/' /etc/nginx/nginx.conf
-    # Restart Nginx agar efeknya langsung terasa
-    systemctl restart nginx
+# --- FIX: LONG DOMAIN NAME SUPPORT (NGINX - STRONG 128) ---
+# Kita ubah jadi 128 agar domain panjang (seperti digitapremium.qqz.io) aman.
+NGINX_CONF="/etc/nginx/nginx.conf"
+
+# 1. Jika masih default (komentar 64) -> Ubah ke 128
+if grep -q "# server_names_hash_bucket_size 64;" "$NGINX_CONF"; then
+    sed -i 's/# server_names_hash_bucket_size 64;/server_names_hash_bucket_size 128;/' "$NGINX_CONF"
 fi
+
+# 2. Jika sudah aktif tapi masih 64 -> Paksa ubah ke 128
+if grep -q "server_names_hash_bucket_size 64;" "$NGINX_CONF"; then
+    sed -i 's/server_names_hash_bucket_size 64;/server_names_hash_bucket_size 128;/' "$NGINX_CONF"
+fi
+
+# Restart Nginx untuk menerapkan
+systemctl restart nginx
 
 # Security
 if ! command -v fail2ban-client &> /dev/null; then
@@ -68,6 +77,17 @@ get_site_root() {
     local dom=$1
     local path=$(awk '/root/ && !/^[ \t]*#/ {print $2}' /etc/nginx/sites-available/$dom 2>/dev/null | tr -d ';')
     echo "$path"
+}
+
+# --- HELPER: GIT URL CLEANER ---
+clean_git_url() {
+    local url=$1
+    # Hapus suffix /tree/main atau /tree/master jika user salah copas
+    url=${url%/tree/main}
+    url=${url%/tree/master}
+    # Hapus trailing slash
+    url=${url%/}
+    echo "$url"
 }
 
 # --- UI DRAWING ---
@@ -145,7 +165,7 @@ show_header() {
     clear
     draw_line 1
     box_center "BUNNY DEPLOY MANAGER" "$WHITE"
-    box_center "v6.4 (Secured)" "$CYAN"
+    box_center "v6.5 (Final Stabil)" "$CYAN"
     draw_line 2
     box_row "RAM : $RAM"  "SWAP: $SWAP"
     box_row "DISK: $DISK" "CPU : $CPU"
@@ -238,7 +258,7 @@ update_tool() {
     fi
 }
 
-# --- DEPLOY WIZARD (NGINX FIXED) ---
+# --- DEPLOY WIZARD (SMART GIT + NGINX 128) ---
 deploy_web() {
     while true; do
         submenu_header "DEPLOY WIZARD"
@@ -263,13 +283,15 @@ deploy_web() {
         PROXY_PARAMS="proxy_http_version 1.1; proxy_set_header Upgrade \$http_upgrade; proxy_set_header Connection 'upgrade'; proxy_set_header Host \$host; proxy_set_header X-Real-IP \$remote_addr; proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for; proxy_set_header X-Forwarded-Proto \$scheme;"
 
         if [ "$TYPE" == "1" ]; then
-            box_input "Git URL" GIT; [ ! -z "$GIT" ] && (rm -rf $ROOT; git clone $GIT $ROOT) || mkdir -p $ROOT
+            box_input "Git URL" GIT; GIT=$(clean_git_url "$GIT")
+            [ ! -z "$GIT" ] && (rm -rf $ROOT; git clone $GIT $ROOT) || mkdir -p $ROOT
             BLOCK="server { listen 80; server_name $DOMAIN; root $ROOT; index index.html; $SEC_HEADERS $NGINX_OPTS $DENY_FILES location / { try_files \$uri \$uri/ /index.html; } location = /favicon.ico { access_log off; log_not_found off; } location = /robots.txt { access_log off; log_not_found off; } }"
         elif [ "$TYPE" == "2" ]; then
-            box_input "Git URL" GIT; [ ! -z "$GIT" ] && (rm -rf $ROOT; git clone $GIT $ROOT; [ -f "$ROOT/composer.json" ] && cd $ROOT && composer install --no-dev; chown -R www-data:www-data $ROOT) || mkdir -p $ROOT
+            box_input "Git URL" GIT; GIT=$(clean_git_url "$GIT")
+            [ ! -z "$GIT" ] && (rm -rf $ROOT; git clone $GIT $ROOT; [ -f "$ROOT/composer.json" ] && cd $ROOT && composer install --no-dev; chown -R www-data:www-data $ROOT) || mkdir -p $ROOT
             BLOCK="server { listen 80; server_name $DOMAIN; root $ROOT; index index.php index.html; $SEC_HEADERS $NGINX_OPTS $DENY_FILES location / { try_files \$uri \$uri/ /index.php?\$query_string; } location ~ \.php$ { include snippets/fastcgi-php.conf; fastcgi_pass unix:/run/php/php$PHP_V-fpm.sock; } location = /favicon.ico { access_log off; log_not_found off; } location = /robots.txt { access_log off; log_not_found off; } }"
         elif [ "$TYPE" == "3" ]; then
-            box_input "Port (e.g 3000)" PORT; box_input "Git URL" GIT
+            box_input "Port (e.g 3000)" PORT; box_input "Git URL" GIT; GIT=$(clean_git_url "$GIT")
             if [ ! -z "$GIT" ]; then 
                 git clone $GIT $ROOT
                 if [ -d "$ROOT" ]; then
@@ -278,7 +300,7 @@ deploy_web() {
             fi
             BLOCK="server { listen 80; server_name $DOMAIN; $SEC_HEADERS $NGINX_OPTS $DENY_FILES location / { proxy_pass http://localhost:$PORT; $PROXY_PARAMS } }"
         elif [ "$TYPE" == "4" ]; then
-            box_input "Port (e.g 5000)" PORT; box_input "Git URL" GIT
+            box_input "Port (e.g 5000)" PORT; box_input "Git URL" GIT; GIT=$(clean_git_url "$GIT")
             if [ ! -z "$GIT" ]; then 
                 git clone $GIT $ROOT
                 if [ -d "$ROOT" ]; then
@@ -397,4 +419,4 @@ done
 EOF
 
 chmod +x /usr/local/bin/bd
-echo -e "${GREEN}SUKSES: BUNNY DEPLOY MANAGER v6.4 (Secured) Terinstall.${NC}"
+echo -e "${GREEN}SUKSES: BUNNY DEPLOY MANAGER v6.5 (Final Stabil) Terinstall.${NC}"
