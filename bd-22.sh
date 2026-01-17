@@ -1,8 +1,7 @@
 #!/bin/bash
 # ===============================================
 #  BUNNY DEPLOY - PRECISION UI (BD-33)
-#  Code: Fixed Width + printf Alignment (OCD Friendly)
-#  Fixed: Color Encoding & Border Alignment
+#  Code: Fixed Width + Emoji Support + Header Box
 # ===============================================
 
 # --- CONFIGURATION ---
@@ -16,9 +15,9 @@ APT_OPTS="-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
 # Cek Root
 if [ "$EUID" -ne 0 ]; then echo "Harap jalankan sebagai root (sudo -i)"; exit; fi
 
-echo "Memuat Interface BD-33 (Fixed UI)..."
+echo "Memuat Interface BD-33 (Fixed Borders)..."
 
-# 1. Basic Tools
+# 1. Basic Tools (Skip jika sudah ada)
 if ! command -v zip &> /dev/null; then
     apt update -y; apt install -y $APT_OPTS curl git unzip zip build-essential ufw software-properties-common mariadb-server bc
 fi
@@ -27,7 +26,7 @@ fi
 systemctl start mariadb >/dev/null 2>&1
 systemctl enable mariadb >/dev/null 2>&1
 
-# 3. Install PHP/Nginx
+# 3. Install PHP/Nginx (Skip jika sudah ada)
 if ! command -v nginx &> /dev/null; then
     add-apt-repository -y ppa:ondrej/php
     apt update -y
@@ -35,7 +34,7 @@ if ! command -v nginx &> /dev/null; then
     apt install -y $APT_OPTS php$PHP_VER php$PHP_VER-fpm php$PHP_VER-mysql php$PHP_VER-curl php$PHP_VER-xml php$PHP_VER-mbstring php$PHP_VER-zip php$PHP_VER-gd composer
 fi
 
-# 4. Install Node
+# 4. Install Node (Skip jika sudah ada)
 if ! command -v node &> /dev/null; then
     curl -fsSL https://deb.nodesource.com/setup_${NODE_VER}.x | bash -
     apt install -y $APT_OPTS nodejs
@@ -50,11 +49,11 @@ ufw allow OpenSSH >/dev/null 2>&1
 if ! ufw status | grep -q "Status: active"; then echo "y" | ufw enable >/dev/null 2>&1; fi
 
 # ==========================================
-# 6. GENERATE SCRIPT 'bd' (PRECISION UI FIXED)
+# 6. GENERATE SCRIPT 'bd' (UI FIXED)
 # ==========================================
 cat << 'EOF' > /usr/local/bin/bd
 #!/bin/bash
-# COLORS (ANSI-C Quoting for Correct Interpretation)
+# COLORS (ANSI-C Quoting)
 CYAN=$'\e[0;36m'; WHITE=$'\e[1;37m'; GREEN=$'\e[0;32m'; YELLOW=$'\e[1;33m'; RED=$'\e[0;31m'; NC=$'\e[0m'
 BOLD=$'\e[1m'
 
@@ -62,26 +61,32 @@ PHP_V="8.2"
 BACKUP_DIR="/root/backups"
 UPDATE_URL="https://raw.githubusercontent.com/mrzero0nol/Bunny-deploy/refs/heads/main/bd-22.sh"
 
-# --- UI DRAWING FUNCTIONS (OCD FRIENDLY) ---
-# Lebar total dalam border = 56 char. Total dengan border = 58.
+# --- UI DRAWING FUNCTIONS ---
+# Lebar total area text = 56 char.
 
 draw_top() { echo -e "${CYAN}┌────────────────────────────────────────────────────────┐${NC}"; }
 draw_mid() { echo -e "${CYAN}├────────────────────────────────────────────────────────┤${NC}"; }
 draw_bot() { echo -e "${CYAN}└────────────────────────────────────────────────────────┘${NC}"; }
+# Draw Div (Pemisah dengan T di tengah untuk kolom)
 draw_div() { echo -e "${CYAN}├───────────────────────────┬────────────────────────────┤${NC}"; }
 
-# Fungsi Text Tengah (Centered) - FIXED
-# Arg 1: Text
-# Arg 2: Color Variable (Optional)
+# Fungsi Text Tengah (Centered) dengan Koreksi Emoji
 print_center() {
     local text="$1"
-    local color="${2:-$WHITE}" # Default color WHITE jika kosong
+    local color="${2:-$WHITE}"
     local width=56
     local len=${#text}
+
+    # KOREKSI BUG EMOJI:
+    # Emoji '🐰' dihitung 1 char tapi makan 2 spasi visual.
+    # Jika ada emoji kelinci, kita anggap panjang text nambah 1 agar padding berkurang 1.
+    if [[ "$text" == *"🐰"* ]]; then
+        len=$((len + 1))
+    fi
+
     local padding=$(( (width - len) / 2 ))
     local right_padding=$(( width - padding - len ))
     
-    # Print: Border | Padding | Color+Text | Padding | Border
     printf "${CYAN}│${NC}%*s${color}%s${NC}%*s${CYAN}│\n${NC}" $padding "" "$text" $right_padding ""
 }
 
@@ -89,7 +94,7 @@ print_center() {
 print_row() {
     local left="$1"
     local right="$2"
-    # Kiri 27 char (1 spasi + 25 text + 1 spasi), Kanan 28 char
+    # Format: │ [spasi] Kiri (25) [spasi] │ [spasi] Kanan (26) [spasi] │
     printf "${CYAN}│${NC} %-25s ${CYAN}│${NC} %-26s ${CYAN}│\n${NC}" "$left" "$right"
 }
 
@@ -113,20 +118,27 @@ show_header() {
     get_sys_info
     clear
     draw_top
+    # Judul (Emoji Rabbit akan otomatis dikoreksi paddingnya)
     print_center "🐰 BUNNY DEPLOY - PRO MANAGER v33" "$WHITE"
     draw_div
     print_row "RAM : ${RAM_USED}/${RAM_TOTAL}MB ($RAM_PERC%)" "DISK: ${DISK_USED}/${DISK_TOTAL} ($DISK_PERC)"
     print_row "SWAP: ${SWAP_USED}/${SWAP_TOTAL}MB ($SWAP_PERC%)" "CPU : Load $LOAD"
+    
+    # --- BOX CORE FEATURES ---
     draw_mid
-    # Kirim Warna sebagai Argumen ke-2 agar padding tidak error
     print_center "CORE FEATURES" "$YELLOW"
+    draw_div  # <--- INI MEMBUAT KOTAK DI BAWAH JUDUL
     print_row "1. Deploy Website"       "4. Manage App (PM2)"
     print_row "2. Manage Web (Nginx)"   "5. Database Wizard"
     print_row "3. Git Pull Update"      "6. Backup Data"
+    
+    # --- BOX UTILITIES ---
     draw_mid
     print_center "UTILITIES" "$YELLOW"
+    draw_div  # <--- INI MEMBUAT KOTAK DI BAWAH JUDUL
     print_row "7. SWAP Manager"         "8. Cron Job"
     print_row "9. Update Tools"         "u. Uninstall"
+    
     draw_mid
     print_center "0. KELUAR (Exit)" "$RED"
     draw_bot
@@ -139,7 +151,7 @@ submenu_header() {
     draw_mid
 }
 
-# --- LOGIC FUNCTIONS ---
+# --- LOGIC FUNCTIONS (Sama seperti sebelumnya) ---
 fix_perm() {
     chown -R www-data:www-data $1
     find $1 -type f -exec chmod 644 {} \;
@@ -344,4 +356,4 @@ EOF
 
 chmod +x /usr/local/bin/bd
 echo -e "${GREEN}UPDATE SELESAI.${NC}"
-echo "Tampilan BD-33 (Precision UI) siap digunakan. Ketik: bd"
+echo "Jalankan ulang dengan mengetik: bd"
