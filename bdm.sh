@@ -1,8 +1,8 @@
 #!/bin/bash
 # ===============================================
-#  BUNNY DEPLOY MANAGER - v6.5 (Final Stabil)
+#  BUNNY DEPLOY MANAGER - v6.4
 #  Author: mrzero0nol
-#  Fitur: Nginx Hash 128 (Strong) + Auto Fix Git URL
+#  Fitur: Nginx Hardening + Real IP Fix + Security Headers
 # ===============================================
 
 # --- 1. CONFIG & PERSIAPAN AWAL ---
@@ -20,42 +20,63 @@ if [ "$EUID" -ne 0 ]; then echo "Harap jalankan sebagai root (sudo -i)"; exit; f
 
 # --- 2. INSTALL TOOLS DASAR ---
 if ! command -v jq &> /dev/null; then
-    echo "Install system tools..."
-    apt update -y; apt install -y curl git unzip zip build-essential ufw software-properties-common mariadb-server bc jq
+    echo "Update & Install system tools..."
+    apt update -y
+    apt install -y curl git unzip zip build-essential ufw software-properties-common mariadb-server bc jq || { echo "Gagal install tools dasar"; exit 1; }
 fi
 
+# Firewall Configuration (PENTING untuk Certbot & Akses)
+echo "Konfigurasi Firewall (UFW)..."
+ufw allow OpenSSH
+ufw allow 'Nginx Full'
+# Pastikan UFW aktif (optional, force enable bisa memutus koneksi jika ssh port beda, jadi kita allow dulu)
+# ufw --force enable
+
 # Service Database & Web Server
-if ! systemctl is-active --quiet mariadb; then systemctl start mariadb; systemctl enable mariadb; fi
+if ! systemctl is-active --quiet mariadb; then
+    systemctl start mariadb
+    systemctl enable mariadb
+fi
 
 if ! command -v nginx &> /dev/null; then
+    echo "Install Nginx & Certbot..."
     add-apt-repository -y ppa:ondrej/php
     add-apt-repository -y ppa:deadsnakes/ppa
     apt update -y
-    apt install -y nginx certbot python3-certbot-nginx
+    apt install -y nginx certbot python3-certbot-nginx || { echo "Gagal install Nginx/Certbot"; exit 1; }
 fi
 
-# --- FIX: LONG DOMAIN NAME SUPPORT (NGINX - STRONG 128) ---
-# Kita ubah jadi 128 agar domain panjang (seperti digitapremium.qqz.io) aman.
-NGINX_CONF="/etc/nginx/nginx.conf"
+# --- FIX: CLOUDFLARE REAL IP (PENTING) ---
+# Agar Nginx mencatat IP asli pengunjung, bukan IP Cloudflare
+echo "Konfigurasi Cloudflare Real IP..."
+CF_CONF="/etc/nginx/conf.d/cloudflare.conf"
+echo "# Cloudflare Real IP" > "$CF_CONF"
+for i in $(curl -s https://www.cloudflare.com/ips-v4); do
+    echo "set_real_ip_from $i;" >> "$CF_CONF"
+done
+for i in $(curl -s https://www.cloudflare.com/ips-v6); do
+    echo "set_real_ip_from $i;" >> "$CF_CONF"
+done
+echo "real_ip_header CF-Connecting-IP;" >> "$CF_CONF"
 
-# 1. Jika masih default (komentar 64) -> Ubah ke 128
-if grep -q "# server_names_hash_bucket_size 64;" "$NGINX_CONF"; then
-    sed -i 's/# server_names_hash_bucket_size 64;/server_names_hash_bucket_size 128;/' "$NGINX_CONF"
+# --- FIX: LONG DOMAIN NAME SUPPORT (NGINX) ---
+# Mengatasi error "could not build server_names_hash"
+if grep -q "# server_names_hash_bucket_size 64;" /etc/nginx/nginx.conf; then
+    sed -i 's/# server_names_hash_bucket_size 64;/server_names_hash_bucket_size 64;/' /etc/nginx/nginx.conf
 fi
-
-# 2. Jika sudah aktif tapi masih 64 -> Paksa ubah ke 128
-if grep -q "server_names_hash_bucket_size 64;" "$NGINX_CONF"; then
-    sed -i 's/server_names_hash_bucket_size 64;/server_names_hash_bucket_size 128;/' "$NGINX_CONF"
-fi
-
-# Restart Nginx untuk menerapkan
-systemctl restart nginx
 
 # Security
 if ! command -v fail2ban-client &> /dev/null; then
-    apt install -y fail2ban; cp /etc/fail2ban/jail.conf /etc/fail2ban/jail.local
-    systemctl restart fail2ban; systemctl enable fail2ban
+    apt install -y fail2ban
+    if [ -f /etc/fail2ban/jail.conf ]; then
+        cp /etc/fail2ban/jail.conf /etc/fail2ban/jail.local
+    fi
+    systemctl restart fail2ban
+    systemctl enable fail2ban
 fi
+
+# Restart Nginx untuk menerapkan perubahan config
+systemctl restart nginx
 
 # ==========================================
 # 3. GENERATE SCRIPT UTAMA
@@ -77,17 +98,6 @@ get_site_root() {
     local dom=$1
     local path=$(awk '/root/ && !/^[ \t]*#/ {print $2}' /etc/nginx/sites-available/$dom 2>/dev/null | tr -d ';')
     echo "$path"
-}
-
-# --- HELPER: GIT URL CLEANER ---
-clean_git_url() {
-    local url=$1
-    # Hapus suffix /tree/main atau /tree/master jika user salah copas
-    url=${url%/tree/main}
-    url=${url%/tree/master}
-    # Hapus trailing slash
-    url=${url%/}
-    echo "$url"
 }
 
 # --- UI DRAWING ---
@@ -165,7 +175,7 @@ show_header() {
     clear
     draw_line 1
     box_center "BUNNY DEPLOY MANAGER" "$WHITE"
-    box_center "v6.5 (Final Stabil)" "$CYAN"
+    box_center "v6.4 (Secured)" "$CYAN"
     draw_line 2
     box_row "RAM : $RAM"  "SWAP: $SWAP"
     box_row "DISK: $DISK" "CPU : $CPU"
@@ -258,7 +268,31 @@ update_tool() {
     fi
 }
 
-# --- DEPLOY WIZARD (SMART GIT + NGINX 128) ---
+# --- DEPLOY WIZARD (NGINX FIXED) ---
+handle_git() {
+    local url=$1
+    local dir=$2
+    if [ -d "$dir" ]; then
+        if [ -d "$dir/.git" ]; then
+            echo -e "${YELLOW}Direktori ada. Melakukan git pull...${NC}"
+            cd "$dir" && git pull
+        else
+            echo -e "${RED}PERINGATAN: Direktori $dir sudah ada tapi bukan git repo.${NC}"
+            echo "1. Backup & Timpa | 2. Batalkan"
+            box_input "Pilih" ACT
+            if [ "$ACT" == "1" ]; then
+                mv "$dir" "${dir}_bak_$(date +%s)"
+                git clone "$url" "$dir"
+            else
+                echo "Deploy dibatalkan."; return 1
+            fi
+        fi
+    else
+        git clone "$url" "$dir"
+    fi
+    chown -R www-data:www-data "$dir"
+}
+
 deploy_web() {
     while true; do
         submenu_header "DEPLOY WIZARD"
@@ -283,37 +317,54 @@ deploy_web() {
         PROXY_PARAMS="proxy_http_version 1.1; proxy_set_header Upgrade \$http_upgrade; proxy_set_header Connection 'upgrade'; proxy_set_header Host \$host; proxy_set_header X-Real-IP \$remote_addr; proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for; proxy_set_header X-Forwarded-Proto \$scheme;"
 
         if [ "$TYPE" == "1" ]; then
-            box_input "Git URL" GIT; GIT=$(clean_git_url "$GIT")
-            [ ! -z "$GIT" ] && (rm -rf $ROOT; git clone $GIT $ROOT) || mkdir -p $ROOT
+            box_input "Git URL" GIT; [ ! -z "$GIT" ] && handle_git "$GIT" "$ROOT" || mkdir -p $ROOT
             BLOCK="server { listen 80; server_name $DOMAIN; root $ROOT; index index.html; $SEC_HEADERS $NGINX_OPTS $DENY_FILES location / { try_files \$uri \$uri/ /index.html; } location = /favicon.ico { access_log off; log_not_found off; } location = /robots.txt { access_log off; log_not_found off; } }"
         elif [ "$TYPE" == "2" ]; then
-            box_input "Git URL" GIT; GIT=$(clean_git_url "$GIT")
-            [ ! -z "$GIT" ] && (rm -rf $ROOT; git clone $GIT $ROOT; [ -f "$ROOT/composer.json" ] && cd $ROOT && composer install --no-dev; chown -R www-data:www-data $ROOT) || mkdir -p $ROOT
+            box_input "Git URL" GIT;
+            if [ ! -z "$GIT" ]; then
+                handle_git "$GIT" "$ROOT"
+                if [ -f "$ROOT/composer.json" ]; then cd "$ROOT" && composer install --no-dev; fi
+            else mkdir -p $ROOT; fi
+            chown -R www-data:www-data $ROOT
             BLOCK="server { listen 80; server_name $DOMAIN; root $ROOT; index index.php index.html; $SEC_HEADERS $NGINX_OPTS $DENY_FILES location / { try_files \$uri \$uri/ /index.php?\$query_string; } location ~ \.php$ { include snippets/fastcgi-php.conf; fastcgi_pass unix:/run/php/php$PHP_V-fpm.sock; } location = /favicon.ico { access_log off; log_not_found off; } location = /robots.txt { access_log off; log_not_found off; } }"
         elif [ "$TYPE" == "3" ]; then
-            box_input "Port (e.g 3000)" PORT; box_input "Git URL" GIT; GIT=$(clean_git_url "$GIT")
+            box_input "Port (e.g 3000)" PORT; box_input "Git URL" GIT
             if [ ! -z "$GIT" ]; then 
-                git clone $GIT $ROOT
+                handle_git "$GIT" "$ROOT"
                 if [ -d "$ROOT" ]; then
                     cd $ROOT && npm install; box_input "Start File" S; pm2 start $S --name "$DOMAIN" && pm2 save
-                else echo -e "${RED}Gagal clone repo.${NC}"; read -p "Enter..."; continue; fi
+                fi
             fi
             BLOCK="server { listen 80; server_name $DOMAIN; $SEC_HEADERS $NGINX_OPTS $DENY_FILES location / { proxy_pass http://localhost:$PORT; $PROXY_PARAMS } }"
         elif [ "$TYPE" == "4" ]; then
-            box_input "Port (e.g 5000)" PORT; box_input "Git URL" GIT; GIT=$(clean_git_url "$GIT")
+            box_input "Port (e.g 5000)" PORT; box_input "Git URL" GIT
             if [ ! -z "$GIT" ]; then 
-                git clone $GIT $ROOT
+                handle_git "$GIT" "$ROOT"
                 if [ -d "$ROOT" ]; then
                     cd $ROOT; python3 -m venv venv; source venv/bin/activate
                     [ -f "requirements.txt" ] && pip install -r requirements.txt; pip install gunicorn
                     box_input "WSGI (e.g app:app)" W; pm2 start "gunicorn -w 4 -b 127.0.0.1:$PORT $W" --name "$DOMAIN" && pm2 save
-                else echo -e "${RED}Gagal clone repo.${NC}"; read -p "Enter..."; continue; fi
+                fi
             fi
             BLOCK="server { listen 80; server_name $DOMAIN; $SEC_HEADERS $NGINX_OPTS $DENY_FILES location / { proxy_pass http://localhost:$PORT; $PROXY_PARAMS } }"
         fi
 
-        echo "$BLOCK" > $CONFIG; ln -s $CONFIG /etc/nginx/sites-enabled/ 2>/dev/null; nginx -t
-        if [ $? -eq 0 ]; then systemctl reload nginx; certbot --nginx -n -m $EMAIL -d $DOMAIN --agree-tos; echo -e "${GREEN}Done!${NC}"; else echo -e "${RED}Error Config Nginx${NC}"; fi
+        echo "$BLOCK" > $CONFIG; ln -s $CONFIG /etc/nginx/sites-enabled/ 2>/dev/null
+        nginx -t
+        if [ $? -eq 0 ]; then
+            systemctl reload nginx
+            echo -e "${YELLOW}Menjalankan Certbot (SSL)...${NC}"
+            certbot --nginx -n -m "$EMAIL" -d "$DOMAIN" --agree-tos
+            if [ $? -eq 0 ]; then
+                echo -e "${GREEN}Deployment & SSL Sukses!${NC}"
+            else
+                echo -e "${RED}Gagal Install SSL. Cek Firewall/Cloudflare Mode.${NC}"
+                echo -e "${YELLOW}Tips: Matikan Proxy Cloudflare (Orange Cloud) saat install SSL.${NC}"
+            fi
+        else
+            echo -e "${RED}Konfigurasi Nginx Salah. Membatalkan...${NC}"
+            rm "$CONFIG" "/etc/nginx/sites-enabled/$(basename $CONFIG)" 2>/dev/null
+        fi
         read -p "Enter..."
     done
 }
@@ -419,4 +470,4 @@ done
 EOF
 
 chmod +x /usr/local/bin/bd
-echo -e "${GREEN}SUKSES: BUNNY DEPLOY MANAGER v6.5 (Final Stabil) Terinstall.${NC}"
+echo -e "${GREEN}SUKSES: BUNNY DEPLOY MANAGER v6.4 (Secured) Terinstall.${NC}"
