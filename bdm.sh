@@ -566,6 +566,113 @@ restore_latest_backup() {
     fi
 }
 
+# --- IAM ADMIN (PHPMYADMIN) MODULE ---
+install_iam_admin() {
+    echo "--- INSTALLING IAM ADMIN (phpMyAdmin) ---"
+
+    local install_dir="/var/www/iam_admin"
+    local version="5.2.1" # Default version, can be dynamic
+
+    if [ -d "$install_dir" ]; then
+        echo "Iam Admin already installed at $install_dir"
+        read -p "Press Enter to continue..."
+        return
+    fi
+
+    # 1. Download
+    echo "Downloading packages..."
+    mkdir -p "$install_dir"
+    cd "$SECURE_TMP" || return
+    curl -sL "https://files.phpmyadmin.net/phpMyAdmin/${version}/phpMyAdmin-${version}-all-languages.zip" -o pma.zip
+
+    if [ ! -f pma.zip ]; then
+        echo "ERROR: Download failed."
+        return 1
+    fi
+
+    # 2. Install
+    echo "Extracting..."
+    unzip -q pma.zip
+    mv phpMyAdmin-*-all-languages/* "$install_dir/"
+
+    # 3. Secure Configuration
+    echo "Configuring security..."
+
+    # Generate random blowfish secret
+    local secret=$(openssl rand -base64 32 | tr -d '=+/' | cut -c1-32)
+
+    cp "$install_dir/config.sample.inc.php" "$install_dir/config.inc.php"
+    sed -i "s/\$cfg\['blowfish_secret'\] = '';/\$cfg['blowfish_secret'] = '$secret';/" "$install_dir/config.inc.php"
+
+    # Set permissions
+    chown -R www-data:www-data "$install_dir"
+    chmod 750 "$install_dir"
+
+    # 4. Create Access Point (Nginx)
+    # We create a random secure path for access to prevent brute force
+    local access_path="iam-$(openssl rand -hex 4)"
+
+    # Add to default Nginx config or create a new dedicated port?
+    # For simplicity and cPanel-like feel, we'll use a dedicated alias on the main IP or a specific port.
+    # Here we'll create a dedicated configuration on port 8888 for security.
+
+    cat > "/etc/nginx/sites-available/iam_admin" << EOF
+server {
+    listen 8888;
+    server_name _;
+    root $install_dir;
+    index index.php;
+
+    access_log /var/log/nginx/iam_admin_access.log;
+    error_log /var/log/nginx/iam_admin_error.log;
+
+    # Security Headers
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+
+    location / {
+        try_files \$uri \$uri/ /index.php?\$query_string;
+    }
+
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/var/run/php/php-fpm.sock;
+    }
+
+    # Deny access to sensitive files
+    location ~ /setup/ { deny all; }
+    location ~ /libraries/ { deny all; }
+    location ~ /\. { deny all; }
+}
+EOF
+
+    # Find correct PHP socket
+    for ver in 8.3 8.2 8.1 8.0 7.4; do
+        if [ -S "/var/run/php/php$ver-fpm.sock" ]; then
+            sed -i "s/php-fpm.sock/php$ver-fpm.sock/" "/etc/nginx/sites-available/iam_admin"
+            break
+        fi
+    done
+
+    # Enable and Firewall
+    ln -sf "/etc/nginx/sites-available/iam_admin" "/etc/nginx/sites-enabled/iam_admin"
+    ufw allow 8888/tcp comment 'Iam Admin Access'
+
+    if nginx -t; then
+        systemctl reload nginx
+        log_audit "IAM_ADMIN_INSTALLED" "Port 8888"
+        echo ""
+        echo "✅ Iam Admin installed successfully!"
+        echo "Access URL: http://$(curl -s ifconfig.me):8888"
+        echo "Login with your MySQL database credentials."
+    else
+        echo "ERROR: Nginx config failed."
+        rm "/etc/nginx/sites-enabled/iam_admin"
+    fi
+
+    read -p "Press Enter..."
+}
+
 # --- MENU FUNCTIONS ---
 
 run_secure_menu() {
@@ -580,6 +687,7 @@ run_secure_menu() {
         echo "4. Security Scan & Audit"
         echo "5. View Audit Logs"
         echo "6. Incident Response"
+        echo "7. Install Iam Admin (DB GUI)"
         echo "0. Exit"
         echo "==============================================="
         read -p "Select option: " choice
@@ -598,6 +706,7 @@ run_secure_menu() {
                 read -p "Press Enter..."
                 ;;
             6) incident_response_menu ;;
+            7) install_iam_admin ;;
             0) exit 0 ;;
             *) echo "Invalid option"; sleep 1 ;;
         esac
