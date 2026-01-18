@@ -13,6 +13,15 @@ FORBIDDEN_PATHS=("/etc" "/root" "/boot" "/dev" "/proc" "/sys")
 MIN_PASSWORD_LENGTH=12
 
 # --- INITIAL SECURITY CHECKS ---
+check_malware_patterns() {
+    # Simple check for obvious malware artifacts
+    if [ -f "/tmp/monero" ] || [ -f "/tmp/xmrig" ]; then
+        echo "CRITICAL: Malware detected in /tmp"
+        log_audit "MALWARE_DETECTED" "Mining tools found in /tmp"
+        exit 1
+    fi
+}
+
 initialize_security() {
     # Create secure temp directory
     SECURE_TMP=$(mktemp -d /tmp/bd_secure.XXXXXX)
@@ -122,19 +131,46 @@ secure_git_clone() {
 
 check_repository() {
     local dir="$1"
+    local found_threat=0
     
-    # Check for suspicious files
-    local suspicious_patterns=("*.sh" "*.py" "*.js" "*.php" "Dockerfile" "docker-compose.yml")
+    # Check for suspicious files by content
+    # We scan common script files
+    local scan_extensions=("sh" "py" "js" "php" "pl" "rb")
     
-    for pattern in "${suspicious_patterns[@]}"; do
-        find "$dir" -name "$pattern" -type f | while read -r file; do
+    for ext in "${scan_extensions[@]}"; do
+        # Use process substitution to avoid subshell variable loss
+        while IFS= read -r file; do
             # Scan for dangerous patterns
-            if grep -q -E "(curl.*bash|wget.*sh|chmod.*777|rm.*-rf|mkfs|dd.*if.*of)" "$file"; then
-                log_audit "SUSPICIOUS_FILE" "$file"
-                return 1
+            # Refined patterns to avoid false positives:
+            # - dangerous piping to bash/sh
+            # - destructive fs commands on root dirs
+            # - mkfs, dd
+            if grep -q -E "(curl .+ \| ?(bash|sh)|wget .+ -O - \| ?(bash|sh)|mkfs\.|dd if=.+ of=/dev/|:(){ :|:& };:)" "$file"; then
+                log_audit "SUSPICIOUS_CONTENT" "$file"
+                echo "WARNING: Suspicious code detected in $file"
+                found_threat=1
             fi
-        done
+
+            # Separate check for destructive commands (more specific)
+            # Detects rm -rf / or rm -rf /*
+            if grep -qE "rm -rf /([[:space:]]*[;&\"']|[*])" "$file" || grep -qE "rm -rf / *" "$file"; then
+                 log_audit "DESTRUCTIVE_COMMAND" "$file"
+                 echo "WARNING: Destructive command detected in $file"
+                 found_threat=1
+            fi
+
+        done < <(find "$dir" -name "*.$ext" -type f)
     done
+
+    # Check for suspicious filenames
+    if find "$dir" -name "miner*" -o -name "*xmrig*" | grep -q .; then
+        log_audit "SUSPICIOUS_FILENAME" "Miner detected"
+        found_threat=1
+    fi
+
+    if [ $found_threat -eq 1 ]; then
+        return 1
+    fi
     return 0
 }
 
@@ -192,10 +228,13 @@ log_audit() {
     echo "$timestamp | $hostname | $user | $event | $details" >> "$AUDIT_LOG"
     
     # Rate limiting check
-    local recent_events=$(grep -c "$event" "$AUDIT_LOG" | tail -n 10)
-    if [ "$recent_events" -gt 5 ]; then
-        # Alert on suspicious frequency
-        echo "SECURITY ALERT: Frequent event '$event' detected" >&2
+    if [ -f "$AUDIT_LOG" ]; then
+        local recent_events=$(grep -c "$event" "$AUDIT_LOG" 2>/dev/null | tail -n 1)
+        # Ensure recent_events is a number
+        if [[ "$recent_events" =~ ^[0-9]+$ ]] && [ "$recent_events" -gt 5 ]; then
+            # Alert on suspicious frequency
+            echo "SECURITY ALERT: Frequent event '$event' detected" >&2
+        fi
     fi
 }
 
@@ -437,7 +476,214 @@ secure_deploy() {
 }
 
 # --- MAIN ENHANCED FUNCTIONS (MODULAR) ---
-# [All previous functions like deploy_web, manage_web, etc. with security enhancements]
+
+generate_secure_nginx_config() {
+    local domain="$1"
+    local type="$2"
+    local config_file="/etc/nginx/sites-available/$domain"
+
+    # Default to PHP if not specified
+    [ -z "$type" ] && type="php"
+
+    cat > "$config_file" << EOF
+server {
+    listen 80;
+    server_name $domain www.$domain;
+    root /var/www/$domain;
+    index index.php index.html index.htm;
+
+    access_log /var/log/nginx/$domain/access.log;
+    error_log /var/log/nginx/$domain/error.log;
+
+    # Security Headers
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Permissions-Policy "geolocation=(), microphone=(), camera=()" always;
+
+    location / {
+        try_files \$uri \$uri/ /index.php?\$query_string;
+    }
+
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/var/run/php/php-fpm.sock;
+    }
+
+    location ~ /\.ht {
+        deny all;
+    }
+
+    # Block hidden files
+    location ~ /\. {
+        deny all;
+        access_log off;
+        log_not_found off;
+    }
+}
+EOF
+
+    # PHP version detection (simple attempt to find socket)
+    # This is a heuristic; might need adjustment for specific servers
+    for ver in 8.3 8.2 8.1 8.0 7.4; do
+        if [ -S "/var/run/php/php$ver-fpm.sock" ]; then
+            sed -i "s/php-fpm.sock/php$ver-fpm.sock/" "$config_file"
+            break
+        fi
+    done
+
+    # Enable site
+    ln -sf "$config_file" "/etc/nginx/sites-enabled/$domain"
+
+    # Test and reload
+    if nginx -t; then
+        systemctl reload nginx
+        echo "Nginx configuration generated and reloaded."
+    else
+        echo "ERROR: Nginx configuration failed verification."
+        rm "/etc/nginx/sites-enabled/$domain"
+    fi
+}
+
+restore_latest_backup() {
+    # Find latest backup
+    local latest=$(find /root/backups -name "*.gpg" -type f -printf '%T@ %p\n' | sort -n | tail -1 | cut -f2- -d" ")
+    if [ -z "$latest" ]; then
+        echo "ERROR: No backup found to restore."
+        return 1
+    fi
+
+    echo "Restoring from $latest..."
+    # Decrypt and restore
+    gpg --decrypt "$latest" 2>/dev/null | tar xz -C /
+
+    if [ $? -eq 0 ]; then
+        log_audit "RESTORE_PERFORMED" "Restored from $latest"
+        echo "Restore completed."
+    else
+        echo "ERROR: Restore failed."
+    fi
+}
+
+# --- MENU FUNCTIONS ---
+
+run_secure_menu() {
+    while true; do
+        clear
+        echo "==============================================="
+        echo "   BUNNY DEPLOY MANAGER - SECURE EDITION"
+        echo "==============================================="
+        echo "1. Deploy New Website"
+        echo "2. Manage Existing Website"
+        echo "3. Database Security Manager"
+        echo "4. Security Scan & Audit"
+        echo "5. View Audit Logs"
+        echo "6. Incident Response"
+        echo "0. Exit"
+        echo "==============================================="
+        read -p "Select option: " choice
+
+        case "$choice" in
+            1) deploy_web_menu ;;
+            2) manage_web_menu ;;
+            3) database_menu ;;
+            4) security_scan; read -p "Press Enter..." ;;
+            5)
+                if [ -f "$AUDIT_LOG" ]; then
+                    tail -n 20 "$AUDIT_LOG"
+                else
+                    echo "No logs yet."
+                fi
+                read -p "Press Enter..."
+                ;;
+            6) incident_response_menu ;;
+            0) exit 0 ;;
+            *) echo "Invalid option"; sleep 1 ;;
+        esac
+    done
+}
+
+deploy_web_menu() {
+    echo "--- DEPLOY WEBSITE ---"
+    read -p "Domain (e.g., example.com): " domain
+    read -p "Type (php/html): " type
+    read -p "Git URL (optional, enter to skip): " git_url
+
+    secure_deploy "$domain" "$type" "$git_url"
+    read -p "Press Enter..."
+}
+
+manage_web_menu() {
+    echo "--- MANAGE WEBSITE ---"
+    read -p "Domain: " domain
+    if [ ! -d "/var/www/$domain" ]; then
+        echo "Error: Domain directory not found."
+        read -p "Press Enter..."
+        return
+    fi
+
+    echo "1. Setup Rate Limiting"
+    echo "2. Check Logs"
+    echo "3. Update/Pull Git"
+    read -p "Option: " opt
+    case "$opt" in
+        1) setup_rate_limiting "$domain" ;;
+        2)
+            echo "--- Last 20 error logs ---"
+            tail -n 20 "/var/log/nginx/$domain/error.log"
+            ;;
+        3)
+           if [ -d "/var/www/$domain/.git" ]; then
+               cd "/var/www/$domain" || return
+               git pull
+               check_repository "/var/www/$domain"
+           else
+               echo "Not a git repository."
+           fi
+           ;;
+    esac
+    read -p "Press Enter..."
+}
+
+database_menu() {
+    echo "--- DATABASE MANAGER ---"
+    echo "1. Create Database & User"
+    echo "2. Backup Database"
+    echo "3. Delete Database"
+    read -p "Option: " opt
+
+    read -p "Database Name: " dbname
+
+    case "$opt" in
+        1)
+            read -p "User: " dbuser
+            read -s -p "Password: " dbpass
+            echo
+            secure_db_operation "create" "$dbname" "$dbuser" "$dbpass"
+            ;;
+        2)
+            secure_db_operation "backup" "$dbname"
+            ;;
+        3)
+            read -p "User (to delete): " dbuser
+            secure_db_operation "delete" "$dbname" "$dbuser"
+            ;;
+    esac
+    read -p "Press Enter..."
+}
+
+incident_response_menu() {
+    echo "--- INCIDENT RESPONSE ---"
+    echo "1. Handle Web Defacement"
+    echo "2. Handle Brute Force"
+    read -p "Option: " opt
+    case "$opt" in
+        1) incident_response "web_defacement" ;;
+        2) incident_response "brute_force" ;;
+    esac
+    read -p "Press Enter..."
+}
 
 # --- RATE LIMITING PROTECTION ---
 setup_rate_limiting() {
